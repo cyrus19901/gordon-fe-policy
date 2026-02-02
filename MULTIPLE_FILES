@@ -1,0 +1,46 @@
+// components/task-view.tsx
+import { useDealState } from "@/lib/deal-context"
+
+const TaskView = () => {
+  const { activeTask } = useDealState()
+
+  if (!activeTask) {
+    return null
+  }
+
+  // ** rest of code here **
+}
+
+export default TaskView
+
+// components/content-header.tsx
+import { useTransition, type ReactNode } from "react"
+import { useDealState, useDealDispatch } from "@/lib/deal-context"
+
+const ContentHeader = ({ children }: { children: ReactNode }) => {
+  const { dealState, isWorkflowDetail, isTaskDetail } = useDealState()
+  const dispatch = useDealDispatch()!
+  const [isPending, startTransition] = useTransition()
+
+  const handleClick = () => {
+    if (!dispatch) return
+    if (isWorkflowDetail) {
+      startTransition(() => {
+        dispatch({ type: "EXIT_WORKFLOW_DETAIL" })
+      })
+    } else if (isTaskDetail) {
+      startTransition(() => {
+        dispatch({ type: "SET_ACTIVE_VIEW", payload: "tasks" })
+      })
+    }
+  }
+
+  return (
+    <div>
+      {/* ** rest of code here ** */}
+      {children}
+    </div>
+  )
+}
+
+export default ContentHeader
