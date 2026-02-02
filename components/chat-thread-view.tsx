@@ -7,21 +7,9 @@ import { useDealState, useDealDispatch } from "@/lib/deal-context"
 import type { ChatMessage } from "@/lib/deal-context"
 import { workflowDefinitions } from "@/lib/workflows"
 import { Bot, User, Pin, Loader, Check, Lightbulb } from "lucide-react"
-import { ContentLayout } from "./content-layout"
 import { Button } from "@/components/ui/button"
-import { EbitdaChart } from "./charts/ebitda-chart"
-import { QoeTable } from "./charts/qoe-table"
-import { CohortChart } from "./charts/cohort-chart"
-import { RiskRadarChart } from "./charts/risk-radar-chart"
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "./ui/card"
-
-const componentMap = {
-  EbitdaChart,
-  QoeTable,
-  CohortChart,
-  RiskRadarChart,
-}
 
 const PipelineMessage = ({ message }: { message: ChatMessage }) => {
   return (
@@ -71,7 +59,6 @@ export const ChatMessageContent = ({
   }
 
   if (message.type === "chart" || message.type === "table") {
-    const Component = componentMap[message.component as keyof typeof componentMap]
     const title = message.content.replace("Generated ", "")
     return (
       <Card className="overflow-hidden">
@@ -82,7 +69,7 @@ export const ChatMessageContent = ({
           </Button>
         </CardHeader>
         <CardContent className="h-80">
-          {Component ? <Component /> : <p>Unsupported component: {message.component}</p>}
+          <p className="text-center text-muted-foreground">Chart visualization: {message.component}</p>
         </CardContent>
         {message.insight && (
           <CardFooter className="bg-secondary/50 text-xs text-secondary-foreground p-3">
@@ -189,11 +176,9 @@ export function ChatThreadView() {
 
   if (!dealState || !activeWorkspace) {
     return (
-      <ContentLayout title="New chat" description="Start a conversation with Gordon AI">
-        <div className="flex h-full items-center justify-center text-muted-foreground">
-          <p>Start a new chat or workflow.</p>
-        </div>
-      </ContentLayout>
+      <div className="flex h-full items-center justify-center text-muted-foreground">
+        <p>Start a new chat or workflow.</p>
+      </div>
     )
   }
 
@@ -215,95 +200,100 @@ export function ChatThreadView() {
   )
 
   return (
-    <ContentLayout
-      title={activeWorkspace.title}
-      description="Conversation with Gordon AI"
-      headerActions={headerActions}
-    >
-      <div className="max-w-6xl mx-auto">
-        <div className="space-y-8 pt-6 pb-32">
-          <AnimatePresence initial={false}>
-            {activeWorkspace.messages.map((message) => (
-              <motion.div
-                key={message.id}
-                data-message-id={message.id}
-                layout
-                variants={messageVariants}
-                initial="hidden"
-                animate="visible"
-                exit="hidden"
-                transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                className={`flex items-start gap-4 group relative ${message.role === "user" ? "justify-end" : ""}`}
-              >
-                {message.role === "ai" && (
-                  <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
-                    <Bot className="w-5 h-5 text-primary-foreground" />
-                  </div>
-                )}
-                {message.role === "ai" && message.type === "text" && (
-                  <div className="absolute top-1/2 -translate-y-1/2 -right-12 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="w-8 h-8"
-                      onClick={(e) => handleAddToInsights(message, e)}
-                    >
-                      <Pin className="h-4 w-4 text-muted-foreground" />
-                    </Button>
-                  </div>
-                )}
-                <div
-                  className={cn(
-                    "max-w-3xl rounded-2xl shadow-sm text-sm w-full",
-                    message.role === "user"
-                      ? "bg-primary text-primary-foreground p-4 rounded-br-lg"
-                      : message.type === "text"
-                        ? "bg-secondary text-secondary-foreground p-4 rounded-bl-lg"
-                        : "",
-                    (message.type === "chart" || message.type === "table") && "bg-transparent shadow-none",
-                    message.type === "pipeline" && "bg-secondary text-secondary-foreground p-4 rounded-bl-lg",
-                  )}
-                >
-                  <ChatMessageContent message={message} onAddToInsights={handleAddToInsights} />
-                </div>
-                {message.role === "user" && (
-                  <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center flex-shrink-0">
-                    <User className="w-5 h-5 text-gray-600" />
-                  </div>
-                )}
-              </motion.div>
-            ))}
-          </AnimatePresence>
-          {isAiThinking && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex items-start gap-4"
-            >
-              <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
-                <Bot className="w-5 h-5 text-primary-foreground" />
-              </div>
-              <div className="max-w-md p-4 rounded-2xl bg-secondary text-secondary-foreground rounded-bl-lg">
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className="h-1.5 w-1.5 bg-gray-400 rounded-full animate-pulse"
-                    style={{ animationDelay: "0s" }}
-                  />
-                  <span
-                    className="h-1.5 w-1.5 bg-gray-400 rounded-full animate-pulse"
-                    style={{ animationDelay: "0.2s" }}
-                  />
-                  <span
-                    className="h-1.5 w-1.5 bg-gray-400 rounded-full animate-pulse"
-                    style={{ animationDelay: "0.4s" }}
-                  />
-                </div>
-              </div>
-            </motion.div>
-          )}
+    <div className="h-full flex flex-col">
+      <div className="flex items-center justify-between p-4 border-b">
+        <div>
+          <h2 className="text-lg font-semibold">{activeWorkspace.title}</h2>
+          <p className="text-sm text-muted-foreground">Conversation with Gordon AI</p>
         </div>
-        <div ref={messagesEndRef} />
+        {headerActions}
       </div>
-    </ContentLayout>
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-6xl mx-auto">
+          <div className="space-y-8 pt-6 pb-32">
+            <AnimatePresence initial={false}>
+              {activeWorkspace.messages.map((message) => (
+                <motion.div
+                  key={message.id}
+                  data-message-id={message.id}
+                  layout
+                  variants={messageVariants}
+                  initial="hidden"
+                  animate="visible"
+                  exit="hidden"
+                  transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                  className={`flex items-start gap-4 group relative ${message.role === "user" ? "justify-end" : ""}`}
+                >
+                  {message.role === "ai" && (
+                    <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
+                      <Bot className="w-5 h-5 text-primary-foreground" />
+                    </div>
+                  )}
+                  {message.role === "ai" && message.type === "text" && (
+                    <div className="absolute top-1/2 -translate-y-1/2 -right-12 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="w-8 h-8"
+                        onClick={(e) => handleAddToInsights(message, e)}
+                      >
+                        <Pin className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    </div>
+                  )}
+                  <div
+                    className={cn(
+                      "max-w-3xl rounded-2xl shadow-sm text-sm w-full",
+                      message.role === "user"
+                        ? "bg-primary text-primary-foreground p-4 rounded-br-lg"
+                        : message.type === "text"
+                          ? "bg-secondary text-secondary-foreground p-4 rounded-bl-lg"
+                          : "",
+                      (message.type === "chart" || message.type === "table") && "bg-transparent shadow-none",
+                      message.type === "pipeline" && "bg-secondary text-secondary-foreground p-4 rounded-bl-lg",
+                    )}
+                  >
+                    <ChatMessageContent message={message} onAddToInsights={handleAddToInsights} />
+                  </div>
+                  {message.role === "user" && (
+                    <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center flex-shrink-0">
+                      <User className="w-5 h-5 text-gray-600" />
+                    </div>
+                  )}
+                </motion.div>
+              ))}
+            </AnimatePresence>
+            {isAiThinking && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex items-start gap-4"
+              >
+                <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
+                  <Bot className="w-5 h-5 text-primary-foreground" />
+                </div>
+                <div className="max-w-md p-4 rounded-2xl bg-secondary text-secondary-foreground rounded-bl-lg">
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className="h-1.5 w-1.5 bg-gray-400 rounded-full animate-pulse"
+                      style={{ animationDelay: "0s" }}
+                    />
+                    <span
+                      className="h-1.5 w-1.5 bg-gray-400 rounded-full animate-pulse"
+                      style={{ animationDelay: "0.2s" }}
+                    />
+                    <span
+                      className="h-1.5 w-1.5 bg-gray-400 rounded-full animate-pulse"
+                      style={{ animationDelay: "0.4s" }}
+                    />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </div>
+          <div ref={messagesEndRef} />
+        </div>
+      </div>
+    </div>
   )
 }
