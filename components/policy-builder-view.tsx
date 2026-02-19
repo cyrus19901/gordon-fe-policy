@@ -94,6 +94,65 @@ interface SimulationResult {
   confidence: number
 }
 
+// Mockup fallback data for when backend is unavailable (from experimentation-branch)
+const MOCKUP_POLICIES: BackendPolicy[] = [
+  {
+    id: "pol-1",
+    name: "Procurement Policy",
+    type: "composite",
+    enabled: true,
+    priority: 1000,
+    transactionTypes: ["agent-to-merchant"],
+    conditions: {},
+    rules: {
+      maxTransactionAmount: 1000,
+      blockedCategories: ["personal items", "gift cards", "cryptocurrency"],
+      fallbackAction: "require_approval"
+    }
+  },
+  {
+    id: "pol-2",
+    name: "Software Licensing Policy",
+    type: "composite",
+    enabled: true,
+    priority: 900,
+    transactionTypes: ["agent-to-merchant"],
+    conditions: {},
+    rules: {
+      maxTransactionAmount: 5000,
+      allowedCategories: ["Software", "SaaS", "Cloud Services"],
+      fallbackAction: "require_approval"
+    }
+  },
+  {
+    id: "pol-3",
+    name: "Travel Booking Policy",
+    type: "composite",
+    enabled: false, // draft in the reference
+    priority: 800,
+    transactionTypes: ["all"],
+    conditions: {},
+    rules: {
+      maxTransactionAmount: 2000,
+      allowedCategories: ["Travel", "Hotels", "Transportation"],
+      fallbackAction: "require_approval"
+    }
+  },
+  {
+    id: "pol-4",
+    name: "Inter-Agent Transfer Policy",
+    type: "composite",
+    enabled: true,
+    priority: 700,
+    transactionTypes: ["agent-to-agent"],
+    conditions: {},
+    rules: {
+      maxTransactionAmount: 10000,
+      fallbackAction: "require_approval"
+    }
+  }
+]
+
 export function PolicyBuilderView() {
   // Policy list state
   const [selectedPolicyId, setSelectedPolicyId] = useState<string | null>(null)
@@ -102,6 +161,7 @@ export function PolicyBuilderView() {
   const [policiesCache, setPoliciesCache] = useState<Map<string, BackendPolicy>>(new Map())
   const [isLoadingPolicies, setIsLoadingPolicies] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [usingMockupData, setUsingMockupData] = useState(false)
 
   // Editor state
   const [activeTab, setActiveTab] = useState<"define" | "enforcement">("define")
@@ -446,23 +506,64 @@ export function PolicyBuilderView() {
     setIsLoadingPolicies(true)
     try {
       const backendPolicies = await apiClient.getPolicies()
-      const mapped = backendPolicies.map(backendPolicyToTemplate)
+      
+      // If backend returns no policies or fails, use mockup data
+      if (!backendPolicies || backendPolicies.length === 0) {
+        console.log('No policies from backend, using mockup data')
+        const mapped = MOCKUP_POLICIES.map(backendPolicyToTemplate)
+        setPolicies(mapped)
+        
+        // Cache mockup policies
+        const cache = new Map<string, BackendPolicy>()
+        MOCKUP_POLICIES.forEach(policy => {
+          cache.set(policy.id, policy)
+        })
+        setPoliciesCache(cache)
+        
+        // Select first policy by default
+        if (mapped.length > 0 && !selectedPolicyId) {
+          selectPolicy(mapped[0])
+        }
+        
+        toast.info('Using demo policies - backend unavailable', { duration: 3000 })
+      } else {
+        // Use backend policies
+        const mapped = backendPolicies.map(backendPolicyToTemplate)
+        setPolicies(mapped)
+        
+        // Cache full policy data for later use (like simulation) to avoid fetching again
+        const cache = new Map<string, BackendPolicy>()
+        backendPolicies.forEach(policy => {
+          cache.set(policy.id, policy)
+        })
+        setPoliciesCache(cache)
+        
+        // Select first policy by default if available
+        if (mapped.length > 0 && !selectedPolicyId) {
+          selectPolicy(mapped[0])
+        }
+      }
+    } catch (error: any) {
+      console.error('Failed to load policies from backend, using mockup data:', error)
+      
+      // Use mockup data as fallback on error
+      const mapped = MOCKUP_POLICIES.map(backendPolicyToTemplate)
       setPolicies(mapped)
       
-      // Cache full policy data for later use (like simulation) to avoid fetching again
+      // Cache mockup policies
       const cache = new Map<string, BackendPolicy>()
-      backendPolicies.forEach(policy => {
+      MOCKUP_POLICIES.forEach(policy => {
         cache.set(policy.id, policy)
       })
       setPoliciesCache(cache)
+      setUsingMockupData(true)
       
-      // Select first policy by default if available
+      // Select first policy by default
       if (mapped.length > 0 && !selectedPolicyId) {
         selectPolicy(mapped[0])
       }
-    } catch (error: any) {
-      console.error('Failed to load policies:', error)
-      toast.error(`Failed to load policies: ${error.message}`)
+      
+      toast.warning(`Backend unavailable - Using demo policies`, { duration: 5000 })
     } finally {
       setIsLoadingPolicies(false)
     }
@@ -585,6 +686,12 @@ export function PolicyBuilderView() {
   }
 
   const createNewPolicy = async () => {
+    // Prevent creating when using mockup data
+    if (usingMockupData) {
+      toast.warning("Cannot create new policies - using demo policies. Connect to backend to enable creating.")
+      return
+    }
+
     try {
       // Create a minimal policy in the backend
       const newBackendPolicy: BackendPolicy = {
@@ -619,6 +726,12 @@ export function PolicyBuilderView() {
   const savePolicy = async (silent = false) => {
     if (!selectedPolicyId) {
       if (!silent) toast.error("No policy selected")
+      return
+    }
+
+    // Prevent saving when using mockup data
+    if (usingMockupData) {
+      if (!silent) toast.warning("Cannot save - using demo policies. Connect to backend to enable saving.")
       return
     }
 
@@ -712,6 +825,12 @@ export function PolicyBuilderView() {
   const deletePolicy = async () => {
     if (!selectedPolicyId) return
 
+    // Prevent deleting when using mockup data
+    if (usingMockupData) {
+      toast.warning("Cannot delete demo policies. Connect to backend to enable deleting.")
+      return
+    }
+
     if (!confirm(`Are you sure you want to delete "${policyName}"?`)) {
       return
     }
@@ -743,6 +862,12 @@ export function PolicyBuilderView() {
   }
 
   const duplicatePolicy = async (policyId: string) => {
+    // Prevent duplicating when using mockup data
+    if (usingMockupData) {
+      toast.warning("Cannot duplicate demo policies. Connect to backend to enable duplicating.")
+      return
+    }
+
     try {
       // Load the source policy from backend
       const sourcePolicy = await apiClient.getPolicy(policyId)
