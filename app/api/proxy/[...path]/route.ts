@@ -88,12 +88,19 @@ async function handleRequest(
       hasBody: !!body,
     });
 
+    // Build headers - forward Authorization from client if present
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    const authHeader = request.headers.get('authorization');
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+
     // Forward request to backend
     const response = await fetch(backendUrl, {
       method,
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body,
     });
 
