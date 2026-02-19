@@ -4,8 +4,9 @@ import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Card } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -15,338 +16,724 @@ import {
 } from "@/components/ui/select"
 import {
   Plus,
-  ArrowDown,
-  Lock,
-  Clock,
-  CheckCircle2,
-  XCircle,
-  ChevronDown,
   Trash2,
-  Copy,
-  RotateCcw,
-  RotateCw,
   Play,
-  Settings,
-  History,
   Wallet,
   Bot,
   ShieldCheck,
   AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  Eye,
+  Pencil,
+  Zap,
+  Lock,
+  ArrowLeft,
+  Shield,
+  UserCheck,
+  FileCheck,
+  ArrowRight,
+  Copy,
+  ChevronRight,
+  FolderOpen,
   Loader2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { apiClient } from "@/lib/api-client"
-import {
-  frontendToBackendPolicy,
-  backendToFrontendPolicy,
-  type FrontendPolicy,
-  type Condition,
-  type PolicyRule,
-} from "@/lib/policy-mapper"
+import { apiClient, BackendPolicy } from "@/lib/api-client"
 import { toast } from "sonner"
 
-// Types are imported from policy-mapper
+// Types
+interface HardConstraint {
+  id: string
+  rule: string
+}
 
-const fieldOptions = [
-  { value: "amount", label: "Amount" },
-  { value: "merchant_category", label: "Merchant Category" },
-  { value: "merchant_name", label: "Merchant Name" },
-  { value: "agent_name", label: "Agent Name" },
-  { value: "agent_type", label: "Agent Type" },
-  { value: "time_of_day", label: "Time of Day" },
-  { value: "day_of_week", label: "Day of Week" },
-  { value: "frequency", label: "Transaction Frequency" },
-  { value: "recipient_agent", label: "Recipient Agent" },
-  { value: "purpose", label: "Transaction Purpose" },
-]
+interface SoftConstraint {
+  id: string
+  guideline: string
+}
 
-const operatorOptions = [
-  { value: "equals", label: "equals" },
-  { value: "not_equals", label: "does not equal" },
-  { value: "greater_than", label: "is greater than" },
-  { value: "greater_than_or_equal", label: "is greater than or equal to" },
-  { value: "less_than", label: "is less than" },
-  { value: "less_than_or_equal", label: "is less than or equal to" },
-  { value: "contains", label: "contains" },
-  { value: "not_contains", label: "does not contain" },
-  { value: "starts_with", label: "starts with" },
-  { value: "in_list", label: "is in list" },
-]
+interface DecisionOutcome {
+  id: string
+  action: "auto-approve" | "approve-with-justification" | "ask-approval" | "block"
+  label: string
+  conditions: string
+  color: string
+  icon: typeof CheckCircle2
+}
 
-const llmOptions = [
-  { value: "chatgpt", label: "ChatGPT" },
-  // Other agents disabled for now - only ChatGPT is supported
-  // { value: "claude", label: "Claude" },
-  // { value: "gemini", label: "Gemini" },
-  // { value: "llama", label: "Llama" },
-  // { value: "mistral", label: "Mistral" },
-  // { value: "cohere", label: "Cohere" },
-  // { value: "custom", label: "Custom Agents" },
-]
+interface ApproverRoute {
+  id: string
+  condition: string
+  approver: string
+}
 
-const outcomeOptions = [
-  { value: "approve", label: "Approve transaction", icon: CheckCircle2, color: "text-green-600" },
-  { value: "deny", label: "Decline transaction", icon: XCircle, color: "text-red-600" },
-  { value: "flag_review", label: "Flag for review", icon: AlertTriangle, color: "text-amber-600" },
-  { value: "require_approval", label: "Ask for approval", icon: ShieldCheck, color: "text-blue-600" },
-]
+interface EvidenceRequirement {
+  id: string
+  category: string
+  requirements: string
+}
+
+interface PolicyTemplate {
+  id: string
+  name: string
+  status: "active" | "draft" | "archived"
+  lastModified: string
+  transactionType: "a2m" | "a2a" | "both"
+  description: string
+}
+
+interface SimulationResult {
+  decision: string
+  decisionColor: string
+  reason: string
+  suggestedAlternative?: string
+  evidenceAttached: string[]
+  rulesTriggered: string[]
+  riskScore: number
+  confidence: number
+}
 
 export function PolicyBuilderView() {
-  const [activeTab, setActiveTab] = useState<"build" | "history" | "settings">("build")
-  const [policy, setPolicy] = useState<FrontendPolicy>({
-    id: `policy-${Date.now()}`,
-    name: "New Policy",
-    transactionType: "agent-to-merchant",
-    llmScope: "specific",
-    selectedLLMs: ["chatgpt"],
-    trigger: "transaction_occurs",
-    rules: [
-      {
-        id: "rule-1",
-        conditions: [
-          { id: "cond-1", field: "amount", operator: "less_than_or_equal", value: "500" },
-        ],
-        logicOperator: "AND",
-      },
-    ],
-    fallbackAction: "require_approval",
-    outcomeAction: "approve",
-    isActive: true,
-  })
-  const [editingCondition, setEditingCondition] = useState<string | null>(null)
-  const [showAddStep, setShowAddStep] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [policies, setPolicies] = useState<FrontendPolicy[]>([])
+  // Policy list state
   const [selectedPolicyId, setSelectedPolicyId] = useState<string | null>(null)
-  const [complianceStats, setComplianceStats] = useState<{
-    totalSpend: number;
-    inPolicySpend: number;
-    outOfPolicySpend: number;
-    compliancePercentage: number;
-    totalTransactions: number;
-    approvedTransactions: number;
-    deniedTransactions: number;
-    pendingApprovals: number;
-    trend: number;
-  } | null>(null)
+  const [showPolicyList, setShowPolicyList] = useState(false)
+  const [policies, setPolicies] = useState<PolicyTemplate[]>([])
+  const [policiesCache, setPoliciesCache] = useState<Map<string, BackendPolicy>>(new Map())
+  const [isLoadingPolicies, setIsLoadingPolicies] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
 
-  const addCondition = (ruleId: string) => {
-    setPolicy((prev) => ({
-      ...prev,
-      rules: prev.rules.map((rule) =>
-        rule.id === ruleId
-          ? {
-              ...rule,
-              conditions: [
-                ...rule.conditions,
-                { id: `cond-${Date.now()}`, field: "amount", operator: "less_than_or_equal", value: "500" },
-              ],
-            }
-          : rule
-      ),
-    }))
+  // Editor state
+  const [activeTab, setActiveTab] = useState<"define" | "enforcement">("define")
+  const [policyName, setPolicyName] = useState("Procurement Policy")
+  const [transactionType, setTransactionType] = useState<"a2m" | "a2a" | "both">("a2m")
+  const [llmScope, setLlmScope] = useState<"all" | "specific">("specific")
+  const [selectedLLMs, setSelectedLLMs] = useState<string[]>(["chatgpt"])
+  const [simulationInput, setSimulationInput] = useState("")
+  const [isSimulating, setIsSimulating] = useState(false)
+  const [simulationResult, setSimulationResult] = useState<SimulationResult | null>(null)
+
+  // Natural language policy statement
+  const [policyStatement, setPolicyStatement] = useState(
+    "Agents can procure goods and services from approved vendors within budget.\nPurchases over $1,000 need department head approval. Any new vendor must go through vendor qualification first.\nAll purchases must reference a valid PO number and cost center."
+  )
+
+  // Structured constraints
+  const [intent, setIntent] = useState("Goods & services procurement")
+  const [scope, setScope] = useState("All departments with purchasing authority")
+
+  const [hardConstraints, setHardConstraints] = useState<HardConstraint[]>([
+    { id: "hc-1", rule: "Max single transaction without approval: $1,000" },
+    { id: "hc-2", rule: "Only approved vendors from the qualified vendor list" },
+    { id: "hc-3", rule: "Must have valid PO number and cost center code" },
+    { id: "hc-4", rule: "Blocked categories: personal items, gift cards, cryptocurrency" },
+    { id: "hc-5", rule: "Cannot exceed quarterly departmental budget allocation" },
+  ])
+
+  const [softConstraints, setSoftConstraints] = useState<SoftConstraint[]>([
+    { id: "sc-1", guideline: "Prefer vendors with negotiated contract pricing" },
+    { id: "sc-2", guideline: "Get 3 quotes for purchases over $5,000" },
+    { id: "sc-3", guideline: "Choose items from pre-approved catalog when available" },
+    { id: "sc-4", guideline: "Consolidate orders to same vendor within 48h window to reduce shipping" },
+  ])
+
+  // Decision outcomes
+  const [decisionOutcomes] = useState<DecisionOutcome[]>([
+    { id: "do-1", action: "auto-approve", label: "Auto-approve", conditions: "Amount <= $1,000 AND vendor approved AND within budget AND valid PO", color: "text-green-600", icon: CheckCircle2 },
+    { id: "do-2", action: "approve-with-justification", label: "Approve with justification", conditions: "Amount <= $5,000 AND vendor approved AND business need documented", color: "text-blue-600", icon: FileCheck },
+    { id: "do-3", action: "ask-approval", label: "Ask approval", conditions: "Over $1,000 OR new vendor OR non-catalog item OR no PO reference", color: "text-amber-600", icon: UserCheck },
+    { id: "do-4", action: "block", label: "Block", conditions: "Vendor not qualified OR blocked category OR budget exceeded OR compliance violation", color: "text-red-600", icon: XCircle },
+  ])
+
+  // Approver routing
+  const [approverRoutes] = useState<ApproverRoute[]>([
+    { id: "ar-1", condition: "Default (< $5,000)", approver: "Department head" },
+    { id: "ar-2", condition: "$5,000 - $25,000", approver: "VP of Operations" },
+    { id: "ar-3", condition: "> $25,000 or new vendor", approver: "CFO + Procurement lead" },
+    { id: "ar-4", condition: "Approver OOO", approver: "Backup approver (auto-routed)" },
+  ])
+
+  // Evidence requirements
+  const [evidenceRequirements] = useState<EvidenceRequirement[]>([
+    { id: "er-1", category: "Standard purchase", requirements: "PO number + cost center + business justification" },
+    { id: "er-2", category: "New vendor", requirements: "W-9 + insurance cert + vendor qualification form + 3 quotes" },
+    { id: "er-3", category: "Capital expenditure", requirements: "Capital request form + ROI analysis + budget approval chain" },
+    { id: "er-4", category: "Recurring / subscription", requirements: "Contract terms + auto-renewal flag + cancellation policy" },
+  ])
+
+  // Actions
+  const addHardConstraint = () => {
+    setHardConstraints(prev => [...prev, { id: `hc-${Date.now()}`, rule: "" }])
   }
 
-  const removeCondition = (ruleId: string, conditionId: string) => {
-    setPolicy((prev) => ({
-      ...prev,
-      rules: prev.rules.map((rule) =>
-        rule.id === ruleId
-          ? { ...rule, conditions: rule.conditions.filter((c) => c.id !== conditionId) }
-          : rule
-      ),
-    }))
+  const removeHardConstraint = (id: string) => {
+    setHardConstraints(prev => prev.filter(c => c.id !== id))
   }
 
-  const updateCondition = (ruleId: string, conditionId: string, updates: Partial<Condition>) => {
-    setPolicy((prev) => ({
-      ...prev,
-      rules: prev.rules.map((rule) =>
-        rule.id === ruleId
-          ? {
-              ...rule,
-              conditions: rule.conditions.map((c) =>
-                c.id === conditionId ? { ...c, ...updates } : c
-              ),
-            }
-          : rule
-      ),
-    }))
+  const addSoftConstraint = () => {
+    setSoftConstraints(prev => [...prev, { id: `sc-${Date.now()}`, guideline: "" }])
   }
 
-  const addRule = () => {
-    setPolicy((prev) => ({
-      ...prev,
-      rules: [
-        ...prev.rules,
-        {
-          id: `rule-${Date.now()}`,
-          conditions: [{ id: `cond-${Date.now()}`, field: "amount", operator: "less_than_or_equal", value: "500" }],
-          logicOperator: "AND",
-        },
-      ],
-    }))
-    setShowAddStep(null)
+  const removeSoftConstraint = (id: string) => {
+    setSoftConstraints(prev => prev.filter(c => c.id !== id))
   }
 
-  const removeRule = (ruleId: string) => {
-    if (policy.rules.length <= 1) {
-      toast.error("Cannot remove the last rule. Policies must have at least one rule.")
+  // Run policy simulation - tests ONLY against the current policy being edited
+  const runSimulation = async () => {
+    if (!simulationInput.trim()) {
+      toast.error("Please enter a scenario to test")
       return
     }
-    setPolicy((prev) => ({
-      ...prev,
-      rules: prev.rules.filter((r) => r.id !== ruleId),
-    }))
+
+    if (!selectedPolicyId) {
+      toast.error("Please save the policy first before testing")
+      return
+    }
+
+    setIsSimulating(true)
+    setSimulationResult(null)
+
+    try {
+      // Parse natural language input to extract transaction details
+      const parsed = parseSimulationInput(simulationInput)
+      
+      // Build a test policy from current editor state
+      const testPolicy: BackendPolicy = {
+        id: selectedPolicyId,
+        name: policyName,
+        type: "composite",
+        enabled: true,
+        priority: 10000, // Highest priority for testing
+        transactionTypes: transactionType === "both" ? ["all"] : 
+                         transactionType === "a2a" ? ["agent-to-agent"] : 
+                         ["agent-to-merchant"],
+        conditions: {},
+        rules: {}
+      }
+
+      // Extract rules from hard constraints
+      hardConstraints.forEach(constraint => {
+        const rule = constraint.rule
+        const lower = rule.toLowerCase()
+        
+        const amountMatch = rule.match(/\$?([\d,]+)/);
+        if (amountMatch) {
+          const amount = parseFloat(amountMatch[1].replace(/,/g, ''))
+          
+          // Check if it's a per-transaction limit or a budget limit
+          if (lower.includes('single') || (lower.includes('transaction') && lower.includes('max'))) {
+            testPolicy.rules.maxTransactionAmount = amount
+            testPolicy.type = 'transaction'
+          } else if (lower.includes('budget') || lower.includes('spend') || (lower.includes('limit') && !lower.includes('transaction'))) {
+            testPolicy.rules.maxAmount = amount
+            testPolicy.type = 'budget'
+            if (lower.includes('daily') || lower.includes('day')) {
+              testPolicy.rules.period = 'daily'
+            } else if (lower.includes('weekly') || lower.includes('week')) {
+              testPolicy.rules.period = 'weekly'
+            } else if (lower.includes('monthly') || lower.includes('month')) {
+              testPolicy.rules.period = 'monthly'
+            } else {
+              testPolicy.rules.period = 'monthly'
+            }
+          }
+        }
+
+        if ((lower.includes('approved') || lower.includes('allowed')) && lower.includes('vendor')) {
+          const afterColon = rule.split(':')[1]?.trim()
+          if (afterColon) {
+            testPolicy.rules.allowedMerchants = afterColon.split(',').map(m => m.trim()).filter(Boolean)
+          }
+        }
+
+        if (lower.includes('blocked') && lower.includes('categor')) {
+          const afterColon = rule.split(':')[1]?.trim()
+          if (afterColon) {
+            testPolicy.rules.blockedCategories = afterColon.split(',').map(m => m.trim()).filter(Boolean)
+          }
+        }
+      })
+
+      // Set fallback action - what happens when no specific rules are triggered
+      // For transaction limits and budgets, if a transaction doesn't violate any rule, it should be approved
+      testPolicy.rules.fallbackAction = "approve"
+
+      // Debug: Log the test policy being created
+      console.log('🧪 Test Policy Configuration:', {
+        name: testPolicy.name,
+        type: testPolicy.type,
+        rules: testPolicy.rules,
+        hardConstraints: hardConstraints.map(c => c.rule)
+      })
+
+      // Get original state of THIS policy from cache (or fetch if not cached)
+      let originalPolicyData = policiesCache.get(selectedPolicyId)
+      if (!originalPolicyData) {
+        originalPolicyData = await apiClient.getPolicy(selectedPolicyId)
+      }
+      
+      // Get all other policies from cache
+      const otherPolicies = Array.from(policiesCache.values())
+        .filter(p => p.id !== selectedPolicyId)
+      
+      try {
+        // Temporarily disable all other policies using cached data
+        await Promise.all(
+          otherPolicies.map(policy => 
+            apiClient.updatePolicy({ ...policy, enabled: false })
+          )
+        )
+
+        // Update THIS policy with test configuration
+        await apiClient.updatePolicy(testPolicy)
+        
+        // Small delay to ensure database is updated
+        await new Promise(resolve => setTimeout(resolve, 100))
+        
+        // Call backend policy check API - now only THIS policy is enabled
+        const result = await apiClient.checkPolicy({
+          user_id: "user-test-123",
+          product_id: parsed.productId,
+          price: parsed.price,
+          merchant: parsed.merchant,
+          category: parsed.category,
+          transaction_type: transactionType === "both" ? "agent-to-merchant" : 
+                           transactionType === "a2a" ? "agent-to-agent" : 
+                           "agent-to-merchant",
+        })
+
+        // The backend evaluates all enabled policies - find THIS policy's result
+        const currentPolicyResult = result.matchedPolicies.find(p => p.id === selectedPolicyId)
+
+        // Build simulation result
+        if (!currentPolicyResult) {
+          const simulation: SimulationResult = {
+            decision: "Policy conditions not triggered",
+            decisionColor: "text-muted-foreground",
+            reason: "This policy's conditions were not met by this transaction. The transaction may fall outside the scope of this policy's rules.",
+            evidenceAttached: [
+              `Product: ${parsed.productName || parsed.productId}`,
+              `Amount: $${parsed.price}`,
+              `Merchant: ${parsed.merchant || "Not specified"}`,
+              `Category: ${parsed.category || "Not specified"}`,
+            ],
+            rulesTriggered: [],
+            riskScore: 0.5,
+            confidence: 0.85,
+          }
+          setSimulationResult(simulation)
+          toast.info("Policy conditions not triggered")
+          return
+        }
+
+        // Map backend result to frontend display
+        const simulation: SimulationResult = {
+          decision: currentPolicyResult.passed ? "Approved by this policy" : 
+                    currentPolicyResult.reason?.toLowerCase().includes("approval") ? 
+                    "Requires approval" : "Blocked by this policy",
+          decisionColor: currentPolicyResult.passed ? "text-green-600" : 
+                         currentPolicyResult.reason?.toLowerCase().includes("approval") ? 
+                         "text-amber-600" : "text-red-600",
+          reason: currentPolicyResult.reason || 
+                  (currentPolicyResult.passed ? 
+                    "Transaction meets all policy requirements" : 
+                    "Transaction violates policy constraints"),
+          evidenceAttached: [
+            `Product: ${parsed.productName || parsed.productId}`,
+            `Amount: $${parsed.price}`,
+            `Merchant: ${parsed.merchant || "Not specified"}`,
+            `Category: ${parsed.category || "Not specified"}`,
+            `Policy: ${policyName}`,
+          ],
+          rulesTriggered: [currentPolicyResult.id],
+          riskScore: currentPolicyResult.passed ? 0.1 : 0.7,
+          confidence: 0.92,
+        }
+
+        setSimulationResult(simulation)
+        toast.success("Simulation completed")
+        
+      } finally {
+        // Restore THIS policy to its original state
+        if (originalPolicyData) {
+          await apiClient.updatePolicy(originalPolicyData)
+        }
+        
+        // Re-enable all other policies (restore to their original enabled state)
+        await Promise.all(
+          otherPolicies.map(policy => 
+            apiClient.updatePolicy({ ...policy, enabled: policy.enabled })
+          )
+        )
+      }
+    } catch (error: any) {
+      console.error('Simulation failed:', error)
+      toast.error(`Simulation failed: ${error.message}`)
+    } finally {
+      setIsSimulating(false)
+    }
+  }
+
+  // Simple parser for natural language input
+  const parseSimulationInput = (input: string): {
+    productId: string
+    productName?: string
+    price: number
+    merchant?: string
+    category?: string
+  } => {
+    const lower = input.toLowerCase()
+    
+    // Extract price
+    const priceMatch = input.match(/\$?([\d,]+(?:\.\d{2})?)/);
+    const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : 100
+
+    // Extract merchant
+    let merchant = "Unknown Merchant"
+    const merchantKeywords = ["from", "at", "via", "through"]
+    for (const keyword of merchantKeywords) {
+      const regex = new RegExp(`${keyword}\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*)`, 'i')
+      const match = input.match(regex)
+      if (match) {
+        merchant = match[1]
+        break
+      }
+    }
+
+    // Detect common merchants
+    if (lower.includes('amazon')) merchant = 'Amazon'
+    else if (lower.includes('dell')) merchant = 'Dell'
+    else if (lower.includes('apple')) merchant = 'Apple'
+    else if (lower.includes('microsoft')) merchant = 'Microsoft'
+    else if (lower.includes('target')) merchant = 'Target'
+    else if (lower.includes('walmart')) merchant = 'Walmart'
+
+    // Extract product
+    const productKeywords = ['buy', 'purchase', 'order', 'get']
+    let productName = input
+    for (const keyword of productKeywords) {
+      const regex = new RegExp(`${keyword}\\s+(?:a\\s+|an\\s+)?([\\w\\s]+?)(?:\\s+(?:from|at|for|\\$)|$)`, 'i')
+      const match = input.match(regex)
+      if (match) {
+        productName = match[1].trim()
+        break
+      }
+    }
+
+    // Detect category
+    let category = "General"
+    if (lower.includes('laptop') || lower.includes('computer')) category = 'Electronics'
+    else if (lower.includes('software') || lower.includes('license')) category = 'Software'
+    else if (lower.includes('purse') || lower.includes('bag') || lower.includes('clothes')) category = 'Fashion'
+    else if (lower.includes('furniture') || lower.includes('desk') || lower.includes('chair')) category = 'Furniture'
+    else if (lower.includes('food') || lower.includes('meal') || lower.includes('lunch')) category = 'Food'
+
+    return {
+      productId: `prod-${Date.now()}`,
+      productName: productName.trim(),
+      price,
+      merchant,
+      category,
+    }
   }
 
   // Load policies from backend
   useEffect(() => {
     loadPolicies()
-    loadComplianceStats()
   }, [])
 
-  const loadComplianceStats = async () => {
-    try {
-      const stats = await apiClient.getPolicyCompliance()
-      setComplianceStats(stats)
-    } catch (error) {
-      console.error('Failed to load compliance stats:', error)
-    }
-  }
-
   const loadPolicies = async () => {
-    setLoading(true)
+    setIsLoadingPolicies(true)
     try {
       const backendPolicies = await apiClient.getPolicies()
-      const frontendPolicies = backendPolicies.map(backendToFrontendPolicy)
-      setPolicies(frontendPolicies)
+      const mapped = backendPolicies.map(backendPolicyToTemplate)
+      setPolicies(mapped)
       
-      // If there are policies and none selected, select the first one
-      if (frontendPolicies.length > 0 && !selectedPolicyId) {
-        setSelectedPolicyId(frontendPolicies[0].id)
-        setPolicy(frontendPolicies[0])
+      // Cache full policy data for later use (like simulation) to avoid fetching again
+      const cache = new Map<string, BackendPolicy>()
+      backendPolicies.forEach(policy => {
+        cache.set(policy.id, policy)
+      })
+      setPoliciesCache(cache)
+      
+      // Select first policy by default if available
+      if (mapped.length > 0 && !selectedPolicyId) {
+        selectPolicy(mapped[0])
       }
     } catch (error: any) {
       console.error('Failed to load policies:', error)
       toast.error(`Failed to load policies: ${error.message}`)
     } finally {
-      setLoading(false)
+      setIsLoadingPolicies(false)
     }
   }
 
-  const handleSavePolicy = async () => {
-    // Validate policy before saving
-    if (!policy.name || policy.name.trim() === '') {
-      toast.error('Please enter a policy name before saving')
-      return
-    }
-
-    if (policy.rules.length === 0) {
-      toast.error('Policy must have at least one rule')
-      return
-    }
-
-    // Validate that all rules have at least one condition
-    for (const rule of policy.rules) {
-      if (rule.conditions.length === 0) {
-        toast.error('Each rule must have at least one condition')
-        return
-      }
-      // Validate condition values (amount must be numeric, merchant/category can be text)
-      for (const condition of rule.conditions) {
-        if (condition.field === 'amount') {
-          if (!condition.value || condition.value.trim() === '' || isNaN(parseFloat(condition.value))) {
-            toast.error('Amount conditions must have a valid number')
-            return
-          }
-        } else if (condition.field === 'merchant_name' || condition.field === 'merchant_category') {
-          if (!condition.value || condition.value.trim() === '') {
-            toast.error('Merchant and category conditions must have a value')
-            return
-          }
-        } else if (!condition.value || condition.value.trim() === '') {
-          toast.error('All condition values must be filled in')
-          return
-        }
+  // Convert backend policy to template format for list display
+  const backendPolicyToTemplate = (policy: BackendPolicy): PolicyTemplate => {
+    // Determine transaction type from transactionTypes array
+    let transactionType: "a2m" | "a2a" | "both" = "a2m"
+    if (policy.transactionTypes) {
+      if (policy.transactionTypes.includes('all')) {
+        transactionType = "both"
+      } else if (policy.transactionTypes.includes('agent-to-agent')) {
+        transactionType = "a2a"
       }
     }
 
-    setSaving(true)
+    // Generate description from rules
+    let description = ""
+    if (policy.rules.maxAmount) {
+      description += `Max ${policy.rules.period || 'monthly'} spend: $${policy.rules.maxAmount}. `
+    }
+    if (policy.rules.maxTransactionAmount) {
+      description += `Max transaction: $${policy.rules.maxTransactionAmount}. `
+    }
+    if (policy.rules.allowedMerchants && policy.rules.allowedMerchants.length > 0) {
+      description += `Allowed merchants: ${policy.rules.allowedMerchants.join(', ')}. `
+    }
+    if (policy.rules.blockedMerchants && policy.rules.blockedMerchants.length > 0) {
+      description += `Blocked merchants: ${policy.rules.blockedMerchants.join(', ')}. `
+    }
+
+    return {
+      id: policy.id,
+      name: policy.name,
+      status: policy.enabled ? "active" : "draft",
+      lastModified: "Recently",
+      transactionType,
+      description: description.trim() || "Policy rules configured"
+    }
+  }
+
+  // Convert backend policy to editor format
+  const selectPolicy = (template: PolicyTemplate) => {
+    setSelectedPolicyId(template.id)
+    setPolicyName(template.name)
+    setTransactionType(template.transactionType)
+    setShowPolicyList(false)
+    
+    // Load full policy details from backend
+    apiClient.getPolicy(template.id).then(policy => {
+      // Map backend rules to our natural language format
+      const hardRules: HardConstraint[] = []
+      const softRules: SoftConstraint[] = []
+
+      if (policy.rules.maxTransactionAmount) {
+        hardRules.push({ 
+          id: `hc-${Date.now()}-1`, 
+          rule: `Max single transaction without approval: $${policy.rules.maxTransactionAmount}` 
+        })
+      }
+      if (policy.rules.allowedMerchants && policy.rules.allowedMerchants.length > 0) {
+        hardRules.push({ 
+          id: `hc-${Date.now()}-2`, 
+          rule: `Only approved vendors: ${policy.rules.allowedMerchants.join(', ')}` 
+        })
+      }
+      if (policy.rules.blockedMerchants && policy.rules.blockedMerchants.length > 0) {
+        hardRules.push({ 
+          id: `hc-${Date.now()}-3`, 
+          rule: `Blocked merchants: ${policy.rules.blockedMerchants.join(', ')}` 
+        })
+      }
+      if (policy.rules.allowedCategories && policy.rules.allowedCategories.length > 0) {
+        softRules.push({ 
+          id: `sc-${Date.now()}-1`, 
+          guideline: `Prefer categories: ${policy.rules.allowedCategories.join(', ')}` 
+        })
+      }
+      if (policy.rules.blockedCategories && policy.rules.blockedCategories.length > 0) {
+        hardRules.push({ 
+          id: `hc-${Date.now()}-4`, 
+          rule: `Blocked categories: ${policy.rules.blockedCategories.join(', ')}` 
+        })
+      }
+
+      if (hardRules.length > 0) setHardConstraints(hardRules)
+      if (softRules.length > 0) setSoftConstraints(softRules)
+
+      // Build policy statement from rules
+      let statement = ""
+      if (policy.rules.maxAmount) {
+        statement += `Agents can spend up to $${policy.rules.maxAmount} per ${policy.rules.period || 'month'}.\n`
+      }
+      if (policy.rules.maxTransactionAmount) {
+        statement += `Purchases over $${policy.rules.maxTransactionAmount} need approval.\n`
+      }
+      if (statement) setPolicyStatement(statement)
+    }).catch(error => {
+      console.error('Failed to load policy details:', error)
+      toast.error('Failed to load policy details')
+    })
+  }
+
+  const tabs = [
+    { key: "define" as const, label: "Define", icon: Pencil },
+    { key: "enforcement" as const, label: "Enforcement", icon: Shield },
+  ]
+
+  const statusColors: Record<string, string> = {
+    active: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-green-200 dark:border-green-800",
+    draft: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border-amber-200 dark:border-amber-800",
+    archived: "bg-muted text-muted-foreground border-border",
+  }
+
+  const statusIcons: Record<string, typeof ShieldCheck> = {
+    active: ShieldCheck,
+    draft: Pencil,
+    archived: FolderOpen,
+  }
+
+  const createNewPolicy = async () => {
     try {
-      const backendPolicy = frontendToBackendPolicy(policy)
-      
-      // Check if policy exists (update) or is new (create)
-      const existing = policies.find(p => p.id === policy.id)
-      
-      if (existing) {
-        await apiClient.updatePolicy(backendPolicy)
-        toast.success(`Policy "${policy.name}" updated successfully`)
-      } else {
-        const created = await apiClient.createPolicy(backendPolicy)
-        toast.success(`Policy "${policy.name}" created successfully`)
-        // Update the policy ID to the one returned from backend
-        setPolicy((prev) => ({ ...prev, id: created.id }))
+      // Create a minimal policy in the backend
+      const newBackendPolicy: BackendPolicy = {
+        id: `pol-${Date.now()}`,
+        name: "Untitled Policy",
+        type: "transaction",
+        enabled: false,
+        priority: 100,
+        transactionTypes: ["all"],
+        conditions: {},
+        rules: {
+          maxTransactionAmount: 1000,
+          fallbackAction: "require_approval",
+        },
       }
-      
+
+      const created = await apiClient.createPolicy(newBackendPolicy)
+      toast.success("New policy created")
+
       // Reload policies
       await loadPolicies()
-      // Set selected policy ID so UI shows we're editing
-      const updatedPolicies = await apiClient.getPolicies()
-      const frontendPolicies = updatedPolicies.map(backendToFrontendPolicy)
-      const savedPolicy = frontendPolicies.find(p => p.id === policy.id || p.name === policy.name)
-      if (savedPolicy) {
-        setSelectedPolicyId(savedPolicy.id)
-        setPolicy(savedPolicy)
+
+      // Select the new policy
+      const template = backendPolicyToTemplate(created)
+      selectPolicy(template)
+    } catch (error: any) {
+      console.error('Failed to create policy:', error)
+      toast.error(`Failed to create policy: ${error.message}`)
+    }
+  }
+
+  const savePolicy = async (silent = false) => {
+    if (!selectedPolicyId) {
+      if (!silent) toast.error("No policy selected")
+      return
+    }
+
+    setIsSaving(true)
+    try {
+      // Build backend policy from current editor state
+      const backendPolicy: BackendPolicy = {
+        id: selectedPolicyId,
+        name: policyName,
+        type: "composite",
+        enabled: true,
+        priority: 100,
+        transactionTypes: transactionType === "both" ? ["all"] : 
+                         transactionType === "a2a" ? ["agent-to-agent"] : 
+                         ["agent-to-merchant"],
+        conditions: {},
+        rules: {}
       }
+
+      // Extract rules from hard constraints
+      hardConstraints.forEach(constraint => {
+        const rule = constraint.rule
+        const lower = rule.toLowerCase()
+        
+        // Extract amounts
+        const amountMatch = rule.match(/\$?([\d,]+)/);
+        if (amountMatch) {
+          const amount = parseFloat(amountMatch[1].replace(/,/g, ''))
+          if (lower.includes('max') && (lower.includes('single') || lower.includes('transaction'))) {
+            backendPolicy.rules.maxTransactionAmount = amount
+          } else if (lower.includes('max') && !lower.includes('single')) {
+            backendPolicy.rules.maxAmount = amount
+            // Try to detect period
+            if (lower.includes('daily') || lower.includes('day')) {
+              backendPolicy.rules.period = 'daily'
+            } else if (lower.includes('weekly') || lower.includes('week')) {
+              backendPolicy.rules.period = 'weekly'
+            } else {
+              backendPolicy.rules.period = 'monthly'
+            }
+          }
+        }
+
+        // Extract merchants (after colons or specific patterns)
+        if ((lower.includes('approved') || lower.includes('allowed')) && lower.includes('vendor')) {
+          const afterColon = rule.split(':')[1]?.trim()
+          if (afterColon) {
+            const merchants = afterColon.split(',').map(m => m.trim()).filter(Boolean)
+            if (merchants.length > 0) {
+              backendPolicy.rules.allowedMerchants = merchants
+            }
+          }
+        } else if (lower.includes('blocked') && (lower.includes('vendor') || lower.includes('merchant'))) {
+          const afterColon = rule.split(':')[1]?.trim()
+          if (afterColon) {
+            const merchants = afterColon.split(',').map(m => m.trim()).filter(Boolean)
+            if (merchants.length > 0) {
+              backendPolicy.rules.blockedMerchants = merchants
+            }
+          }
+        }
+
+        // Extract categories
+        if (lower.includes('blocked') && lower.includes('categor')) {
+          const afterColon = rule.split(':')[1]?.trim()
+          if (afterColon) {
+            const categories = afterColon.split(',').map(m => m.trim()).filter(Boolean)
+            if (categories.length > 0) {
+              backendPolicy.rules.blockedCategories = categories
+            }
+          }
+        }
+      })
+
+      // Set fallback action - approve if no explicit blocking rules
+      backendPolicy.rules.fallbackAction = "approve"
+
+      await apiClient.updatePolicy(backendPolicy)
+      if (!silent) toast.success(`Policy "${policyName}" saved successfully`)
+
+      // Reload policies
+      if (!silent) await loadPolicies()
     } catch (error: any) {
       console.error('Failed to save policy:', error)
       toast.error(`Failed to save policy: ${error.message}`)
     } finally {
-      setSaving(false)
+      setIsSaving(false)
     }
   }
 
-  const handleDeletePolicy = async () => {
-    if (!confirm(`Are you sure you want to delete "${policy.name}"?`)) {
+  const deletePolicy = async () => {
+    if (!selectedPolicyId) return
+
+    if (!confirm(`Are you sure you want to delete "${policyName}"?`)) {
       return
     }
-    
+
     try {
-      await apiClient.deletePolicy(policy.id)
-      toast.success('Policy deleted successfully')
-      
-      // Reload policies and select first one or create new
+      await apiClient.deletePolicy(selectedPolicyId)
+      toast.success("Policy deleted successfully")
+
+      // Reload policies
       await loadPolicies()
+
+      // Select first policy if available
       if (policies.length > 1) {
-        const remaining = policies.filter(p => p.id !== policy.id)
+        const remaining = policies.filter(p => p.id !== selectedPolicyId)
         if (remaining.length > 0) {
-          setSelectedPolicyId(remaining[0].id)
-          setPolicy(remaining[0])
+          selectPolicy(remaining[0])
+        } else {
+          setShowPolicyList(true)
+          setSelectedPolicyId(null)
         }
       } else {
-        // Create a new empty policy
-        setPolicy({
-          id: `policy-${Date.now()}`,
-          name: "New Policy",
-          transactionType: "agent-to-merchant",
-          llmScope: "specific",
-          selectedLLMs: ["chatgpt"],
-          trigger: "transaction_occurs",
-          rules: [
-            {
-              id: "rule-1",
-              conditions: [
-                { id: "cond-1", field: "amount", operator: "less_than_or_equal", value: "500" },
-              ],
-              logicOperator: "AND",
-            },
-          ],
-          fallbackAction: "require_approval",
-          outcomeAction: "approve",
-          isActive: true,
-        })
+        setShowPolicyList(true)
         setSelectedPolicyId(null)
       }
     } catch (error: any) {
@@ -355,738 +742,610 @@ export function PolicyBuilderView() {
     }
   }
 
-  const handleNewPolicy = () => {
-    setPolicy({
-      id: `policy-${Date.now()}`,
-      name: "New Policy",
-      transactionType: "agent-to-merchant",
-      llmScope: "specific",
-      selectedLLMs: ["chatgpt"],
-      trigger: "transaction_occurs",
-      rules: [
-        {
-          id: "rule-1",
-          conditions: [
-            { id: "cond-1", field: "amount", operator: "less_than_or_equal", value: "500" },
-          ],
-          logicOperator: "AND",
-        },
-      ],
-      fallbackAction: "require_approval",
-      outcomeAction: "approve",
-      isActive: true,
-    })
-    setSelectedPolicyId(null)
-    toast.info('Creating new policy - enter a name and configure your rules')
-  }
+  const duplicatePolicy = async (policyId: string) => {
+    try {
+      // Load the source policy from backend
+      const sourcePolicy = await apiClient.getPolicy(policyId)
+      
+      // Create duplicate with new ID and name
+      const duplicatedPolicy: BackendPolicy = {
+        ...sourcePolicy,
+        id: `pol-${Date.now()}`,
+        name: `${sourcePolicy.name} (Copy)`,
+        enabled: false,
+      }
 
-  const handleSelectPolicy = (policyId: string) => {
-    if (!policyId) {
-      // User selected "empty" option - create new policy
-      handleNewPolicy()
-      return
-    }
-    const selected = policies.find(p => p.id === policyId)
-    if (selected) {
-      setPolicy(selected)
-      setSelectedPolicyId(policyId)
-      toast.success(`Loaded policy: ${selected.name}`)
+      await apiClient.createPolicy(duplicatedPolicy)
+      toast.success("Policy duplicated successfully")
+
+      // Reload policies
+      await loadPolicies()
+    } catch (error: any) {
+      console.error('Failed to duplicate policy:', error)
+      toast.error(`Failed to duplicate policy: ${error.message}`)
     }
   }
 
-  return (
-    <div className="flex flex-col lg:flex-row h-full">
-      {/* Main Canvas */}
-      <div className="flex-1 overflow-auto min-w-0">
-        {/* Breadcrumb Header */}
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 px-4 sm:px-6 py-4 border-b border-border/50 bg-muted/20">
-          {/* Left Section - Breadcrumb and Policy Info */}
-          <div className="flex items-center gap-2 sm:gap-3 min-w-0 overflow-hidden">
-            <div className="flex items-center gap-2 text-sm shrink-0">
-              <span className="text-muted-foreground hidden md:inline">Expense approvals</span>
-              <span className="text-muted-foreground hidden md:inline">{" > "}</span>
-            </div>
-            {selectedPolicyId ? (
-              <>
-                <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 shrink-0">
-                  <Settings className="h-3 w-3 mr-1" />
-                  <span className="hidden sm:inline">Editing</span>
-                  <span className="sm:hidden">Edit</span>
-                </Badge>
-                <Select value={selectedPolicyId || ""} onValueChange={handleSelectPolicy}>
-                  <SelectTrigger className="w-[140px] sm:w-[160px] md:w-[180px] font-medium shrink-0">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {policies.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name} {!p.isActive && "(Inactive)"}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="text-muted-foreground hidden xl:inline shrink-0">{" / "}</div>
-                <div className="flex items-center gap-2 min-w-0 flex-1 max-w-[280px]">
-                  <label className="text-sm font-medium text-foreground whitespace-nowrap shrink-0 hidden md:inline">Name:</label>
-                  <Input
-                    value={policy.name}
-                    onChange={(e) => setPolicy((prev) => ({ ...prev, name: e.target.value }))}
-                    placeholder="Policy name..."
-                    className="font-medium text-sm sm:text-base min-w-0 flex-1 border-border focus-visible:ring-2 focus-visible:ring-primary"
-                  />
-                </div>
-              </>
-            ) : (
-              <>
-                <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 shrink-0">
-                  <Plus className="h-3 w-3 mr-1" />
-                  <span className="hidden sm:inline">New Policy</span>
-                  <span className="sm:hidden">New</span>
-                </Badge>
-                <div className="flex items-center gap-2 min-w-0 flex-1 max-w-[280px]">
-                  <label className="text-sm font-medium text-foreground whitespace-nowrap shrink-0 hidden md:inline">Policy name:</label>
-                  <Input
-                    value={policy.name}
-                    onChange={(e) => setPolicy((prev) => ({ ...prev, name: e.target.value }))}
-                    placeholder="Enter policy name..."
-                    className="font-medium text-sm sm:text-base min-w-0 flex-1 border-border focus-visible:ring-2 focus-visible:ring-primary"
-                  />
-                </div>
-              </>
-            )}
+  // Policy list view
+  if (showPolicyList || !selectedPolicyId) {
+    return (
+      <div className="p-6 max-w-4xl mx-auto">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">All Policies</h2>
+            <p className="text-sm text-muted-foreground mt-0.5">{policies.length} policies configured</p>
           </div>
-          {/* Right Section - Action Buttons */}
-          <div className="flex items-center gap-2 shrink-0">
-            {selectedPolicyId && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleNewPolicy}
-                className="shrink-0"
+          <Button onClick={createNewPolicy} className="gap-2 bg-[#c8e972] hover:bg-[#b8d962] text-black font-medium h-9 text-sm">
+            <Plus className="h-4 w-4" />
+            New policy
+          </Button>
+        </div>
+
+        {isLoadingPolicies ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="text-center">
+              <div className="h-8 w-8 border-2 border-muted-foreground/20 border-t-foreground rounded-full animate-spin mx-auto mb-3" />
+              <p className="text-sm text-muted-foreground">Loading policies...</p>
+            </div>
+          </div>
+        ) : policies.length === 0 ? (
+          <div className="text-center py-12">
+            <ShieldCheck className="h-12 w-12 mx-auto mb-3 text-muted-foreground/50" />
+            <h3 className="text-lg font-semibold mb-2">No policies yet</h3>
+            <p className="text-sm text-muted-foreground mb-6">Create your first policy to get started</p>
+            <Button onClick={createNewPolicy} className="gap-2 bg-[#c8e972] hover:bg-[#b8d962] text-black font-medium">
+              <Plus className="h-4 w-4" />
+              Create your first policy
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+          {policies.map(policy => {
+            const StatusIcon = statusIcons[policy.status]
+            return (
+              <motion.div
+                key={policy.id}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
               >
-                <Plus className="h-4 w-4 sm:mr-2" />
-                <span className="hidden sm:inline">New Policy</span>
-              </Button>
-            )}
-            {!selectedPolicyId && (
-              <Select value={selectedPolicyId || ""} onValueChange={handleSelectPolicy}>
-                <SelectTrigger className="w-[140px] sm:w-[180px] shrink-0">
-                  <SelectValue placeholder="Select existing policy..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {policies.length > 0 ? (
-                    policies.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name} {!p.isActive && "(Inactive)"}
-                      </SelectItem>
-                    ))
-                  ) : (
-                    <div className="px-2 py-1.5 text-sm text-muted-foreground">No policies yet</div>
-                  )}
-                </SelectContent>
-              </Select>
-            )}
+                <Card
+                  className="bg-card border-border shadow-sm hover:shadow-md transition-shadow cursor-pointer group"
+                  onClick={() => selectPolicy(policy)}
+                >
+                  <CardContent className="p-4 flex items-center gap-4">
+                    <div className={cn(
+                      "w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0",
+                      policy.status === "active" ? "bg-green-100 dark:bg-green-900/30" :
+                      policy.status === "draft" ? "bg-amber-100 dark:bg-amber-900/30" :
+                      "bg-muted"
+                    )}>
+                      <StatusIcon className={cn(
+                        "h-5 w-5",
+                        policy.status === "active" ? "text-green-600 dark:text-green-400" :
+                        policy.status === "draft" ? "text-amber-600 dark:text-amber-400" :
+                        "text-muted-foreground"
+                      )} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <h3 className="font-medium text-foreground">{policy.name}</h3>
+                        <Badge variant="outline" className={cn("text-xs capitalize", statusColors[policy.status])}>
+                          {policy.status}
+                        </Badge>
+                        <Badge variant="secondary" className="text-xs flex items-center gap-1">
+                          <Bot className="h-3 w-3" />
+                          ChatGPT
+                        </Badge>
+                      </div>
+                      {policy.description && (
+                        <p className="text-sm text-muted-foreground line-clamp-1">{policy.description}</p>
+                      )}
+                      <p className="text-xs text-muted-foreground/70 mt-1">Modified {policy.lastModified}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          duplicatePolicy(policy.id)
+                        }}
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                      <ChevronRight className="h-5 w-5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )
+          })}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Policy editor view
+  return (
+    <div className="flex h-full min-h-[calc(100vh-200px)]">
+      {/* Main canvas */}
+      <div className="flex-1 overflow-auto">
+        {/* Top bar */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border/50">
+          <div className="flex items-center gap-4">
             <Button
-              className="bg-[#c8e972] hover:bg-[#b8d962] text-black font-medium shadow-sm shrink-0 whitespace-nowrap"
-              onClick={handleSavePolicy}
-              disabled={saving || !policy.name.trim()}
-              size="lg"
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 text-muted-foreground hover:text-foreground h-8 text-xs"
+              onClick={() => setShowPolicyList(true)}
             >
-              {saving ? (
+              <ArrowLeft className="h-3.5 w-3.5" />
+              All policies
+            </Button>
+            <div className="w-px h-5 bg-border" />
+            <Input
+              value={policyName}
+              onChange={e => setPolicyName(e.target.value)}
+              className="text-lg font-semibold bg-transparent border-none shadow-none px-0 h-auto focus-visible:ring-0 w-[280px]"
+            />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button 
+              onClick={() => savePolicy(false)} 
+              disabled={isSaving}
+              className="bg-[#c8e972] hover:bg-[#b8d962] text-black font-medium h-9 text-sm"
+            >
+              {isSaving ? (
                 <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  <span className="hidden sm:inline">Saving...</span>
-                </>
-              ) : selectedPolicyId ? (
-                <>
-                  <Settings className="h-4 w-4 sm:mr-2" />
-                  <span className="hidden sm:inline">Save Changes</span>
-                  <span className="sm:hidden">Save</span>
+                  <div className="h-3.5 w-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin mr-2" />
+                  Saving...
                 </>
               ) : (
-                <>
-                  <Plus className="h-4 w-4 sm:mr-2" />
-                  <span className="hidden sm:inline">Create Policy</span>
-                  <span className="sm:hidden">Create</span>
-                </>
+                "Save policy"
               )}
             </Button>
           </div>
         </div>
 
-        {/* Transaction Type & LLM Scope Selector */}
-        <div className="px-4 sm:px-6 py-4 border-b border-border/30 bg-muted/20">
-          <div className="flex flex-wrap gap-4 sm:gap-6">
-            {/* Transaction Type */}
-            <div className="flex items-center gap-3">
-              <span className="text-sm font-medium text-muted-foreground">Apply to:</span>
-              <Select
-                value={policy.transactionType}
-                onValueChange={(value: "agent-to-merchant" | "agent-to-agent" | "all") =>
-                  setPolicy((prev) => ({ ...prev, transactionType: value }))
-                }
-              >
-                <SelectTrigger className="w-[200px] bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">
-                    <div className="flex items-center gap-2">
-                      <Wallet className="h-4 w-4" />
-                      All Transactions
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="agent-to-merchant">
-                    <div className="flex items-center gap-2">
-                      <Wallet className="h-4 w-4" />
-                      Agent to Merchant
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="agent-to-agent">
-                    <div className="flex items-center gap-2">
-                      <Bot className="h-4 w-4" />
-                      Agent to Agent
-                    </div>
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+        {/* Apply to / LLM scope bar */}
+        <div className="flex items-center gap-6 px-6 py-3 border-b border-border/50 bg-muted/20">
+          <div className="flex items-center gap-2.5">
+            <span className="text-sm text-muted-foreground">Apply to:</span>
+            <Select value={transactionType} onValueChange={(v: "a2m" | "a2a" | "both") => setTransactionType(v)}>
+              <SelectTrigger className="w-[180px] h-8 text-sm border-border bg-background">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="a2m">
+                  <span className="flex items-center gap-1.5"><Wallet className="h-3.5 w-3.5" /> Agent to Merchant</span>
+                </SelectItem>
+                <SelectItem value="a2a">
+                  <span className="flex items-center gap-1.5"><Bot className="h-3.5 w-3.5" /> Agent to Agent</span>
+                </SelectItem>
+                <SelectItem value="both">
+                  <span className="flex items-center gap-1.5"><Wallet className="h-3.5 w-3.5" /> A2M + A2A</span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
-            {/* LLM Scope */}
-            <div className="flex items-center gap-3">
-              <span className="text-sm font-medium text-muted-foreground">LLM scope:</span>
-              <Select
-                value={policy.llmScope}
-                onValueChange={(value: "all" | "specific") =>
-                  setPolicy((prev) => ({ 
-                    ...prev, 
-                    llmScope: value, 
-                    selectedLLMs: value === "all" ? [] : (prev.selectedLLMs.length > 0 ? prev.selectedLLMs : ["chatgpt"])
-                  }))
-                }
-              >
-                <SelectTrigger className="w-[160px] bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All LLMs</SelectItem>
-                  <SelectItem value="specific">Specific LLMs</SelectItem>
-                </SelectContent>
-              </Select>
+          <div className="w-px h-5 bg-border" />
 
-              {policy.llmScope === "specific" && (
-                <div className="flex flex-wrap gap-2">
-                  {llmOptions.map((llm) => (
-                    <button
-                      key={llm.value}
-                      onClick={() => {
-                        setPolicy((prev) => ({
-                          ...prev,
-                          selectedLLMs: prev.selectedLLMs.includes(llm.value)
-                            ? prev.selectedLLMs.filter((l) => l !== llm.value)
-                            : [...prev.selectedLLMs, llm.value],
-                        }))
-                      }}
-                      className={cn(
-                        "px-3 py-1 rounded-full text-xs font-medium transition-all",
-                        policy.selectedLLMs.includes(llm.value)
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-muted text-muted-foreground hover:bg-muted/80"
-                      )}
-                    >
-                      {llm.label}
-                    </button>
-                  ))}
-                  {policy.selectedLLMs.length === 0 && (
-                    <span className="text-xs text-muted-foreground px-2 py-1">Select at least one LLM</span>
-                  )}
-                </div>
-              )}
-            </div>
+          <div className="flex items-center gap-2.5">
+            <span className="text-sm text-muted-foreground">LLM scope:</span>
+            <Select value={llmScope} onValueChange={(v: "all" | "specific") => setLlmScope(v)}>
+              <SelectTrigger className="w-[160px] h-8 text-sm border-border bg-background">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All LLMs</SelectItem>
+                <SelectItem value="specific">Specific LLMs</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {llmScope === "specific" && (
+              <div className="flex items-center gap-1.5">
+                {selectedLLMs.includes("chatgpt") && (
+                  <Badge className="bg-foreground text-background hover:bg-foreground/90 text-xs font-medium px-2.5 py-0.5 rounded-full">
+                    ChatGPT
+                  </Badge>
+                )}
+                {selectedLLMs.includes("anthropic") ? (
+                  <Badge className="bg-foreground text-background hover:bg-foreground/90 text-xs font-medium px-2.5 py-0.5 rounded-full">
+                    Anthropic
+                  </Badge>
+                ) : (
+                  <button
+                    onClick={() => {}}
+                    className="text-xs text-muted-foreground border border-dashed border-border rounded-full px-2.5 py-0.5 hover:border-foreground/30 transition-colors cursor-not-allowed opacity-50"
+                    title="Coming soon"
+                  >
+                    + Anthropic
+                  </button>
+                )}
+                {selectedLLMs.includes("perplexity") ? (
+                  <Badge className="bg-foreground text-background hover:bg-foreground/90 text-xs font-medium px-2.5 py-0.5 rounded-full">
+                    Perplexity
+                  </Badge>
+                ) : (
+                  <button
+                    onClick={() => {}}
+                    className="text-xs text-muted-foreground border border-dashed border-border rounded-full px-2.5 py-0.5 hover:border-foreground/30 transition-colors cursor-not-allowed opacity-50"
+                    title="Coming soon"
+                  >
+                    + Perplexity
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Workflow Canvas */}
-        <div className="p-4 sm:p-6 lg:p-8 min-h-[600px]">
-          <div className="max-w-2xl mx-auto space-y-0">
-            {/* Trigger Node */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="relative"
+        {/* Tab navigation */}
+        <div className="flex items-center gap-0 px-6 border-b border-border/50">
+          {tabs.map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={cn(
+                "flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors relative",
+                activeTab === tab.key
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
             >
-              <div className="flex items-center gap-3 px-5 py-4 bg-background border border-border rounded-lg shadow-sm">
-                <div className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-100">
-                  <Wallet className="h-4 w-4 text-blue-600" />
-                </div>
-                <span className="font-medium">When transaction occurs</span>
-                <div className="ml-auto flex items-center gap-2">
-                  <Lock className="h-4 w-4 text-muted-foreground" />
-                  <Badge variant="outline" className="text-xs">
-                    <Clock className="h-3 w-3 mr-1" />
-                    Trigger
-                  </Badge>
-                </div>
-              </div>
-            </motion.div>
+              <tab.icon className="h-4 w-4" />
+              {tab.label}
+              {activeTab === tab.key && (
+                <motion.div layoutId="tab-indicator" className="absolute bottom-0 left-0 right-0 h-0.5 bg-foreground" />
+              )}
+            </button>
+          ))}
+        </div>
 
-            {/* Connector Arrow */}
-            <div className="flex justify-center py-2">
-              <div className="flex flex-col items-center">
-                <div className="w-px h-4 bg-border" />
-                <ArrowDown className="h-4 w-4 text-muted-foreground" />
-              </div>
-            </div>
-
-            {/* Condition Rules */}
-            {policy.rules.map((rule, ruleIndex) => (
+        {/* Tab content */}
+        <div className="p-6 max-w-3xl">
+          <AnimatePresence mode="wait">
+            {/* DEFINE TAB */}
+            {activeTab === "define" && (
               <motion.div
-                key={rule.id}
-                initial={{ opacity: 0, y: 20 }}
+                key="define"
+                initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: ruleIndex * 0.1 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.2 }}
+                className="space-y-8"
               >
-                <div className="border border-border rounded-lg bg-background shadow-sm overflow-hidden">
-                  {/* Conditions */}
-                  <div className="p-5 space-y-4">
-                    {rule.conditions.map((condition, condIndex) => (
-                      <div key={condition.id}>
-                        {condIndex > 0 && (
-                          <div className="flex items-center gap-2 py-2">
-                            <div className="flex-1 h-px bg-border" />
-                            <button
-                              onClick={() =>
-                                setPolicy((prev) => ({
-                                  ...prev,
-                                  rules: prev.rules.map((r) =>
-                                    r.id === rule.id
-                                      ? { ...r, logicOperator: r.logicOperator === "AND" ? "OR" : "AND" }
-                                      : r
-                                  ),
-                                }))
-                              }
-                              className="px-3 py-1 text-xs font-medium text-muted-foreground hover:text-foreground bg-muted rounded-full"
-                            >
-                              {rule.logicOperator}
-                            </button>
-                            <div className="flex-1 h-px bg-border" />
-                          </div>
-                        )}
+                {/* Policy statement */}
+                <section>
+                  <Label className="text-sm font-semibold text-foreground mb-1.5 block">Policy statement (natural language)</Label>
+                  <p className="text-xs text-muted-foreground mb-3">Describe the procurement policy in plain English. The system will extract structured constraints below.</p>
+                  <textarea
+                    value={policyStatement}
+                    onChange={e => setPolicyStatement(e.target.value)}
+                    rows={4}
+                    className="w-full rounded-lg border border-border bg-background px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none leading-relaxed"
+                  />
+                </section>
 
-                        <div className="flex items-start gap-3">
-                          <span className="text-sm font-medium text-muted-foreground pt-2 w-6">
-                            {condIndex === 0 ? "If" : ""}
-                          </span>
+                {/* Auto-extracted fields */}
+                <div className="border border-dashed border-border/60 rounded-lg p-5 bg-muted/10 space-y-5">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground font-medium uppercase tracking-wider">
+                    <Zap className="h-3.5 w-3.5" />
+                    Auto-extracted structured fields
+                  </div>
 
-                          <div className="flex-1 space-y-3">
-                            <div className="flex items-center gap-2">
-                              <Select
-                                value={condition.field}
-                                onValueChange={(value) =>
-                                  updateCondition(rule.id, condition.id, { field: value })
-                                }
-                              >
-                                <SelectTrigger className="w-[180px]">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {fieldOptions.map((opt) => (
-                                    <SelectItem key={opt.value} value={opt.value}>
-                                      {opt.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-xs font-medium text-muted-foreground">Intent</Label>
+                      <Input value={intent} onChange={e => setIntent(e.target.value)} className="mt-1 h-9 text-sm" />
+                    </div>
+                    <div>
+                      <Label className="text-xs font-medium text-muted-foreground">Scope</Label>
+                      <Input value={scope} onChange={e => setScope(e.target.value)} className="mt-1 h-9 text-sm" />
+                    </div>
+                  </div>
+                </div>
 
-                              <Select
-                                value={condition.operator}
-                                onValueChange={(value) =>
-                                  updateCondition(rule.id, condition.id, { operator: value })
-                                }
-                              >
-                                <SelectTrigger className="w-[220px]">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {operatorOptions.map((opt) => (
-                                    <SelectItem key={opt.value} value={opt.value}>
-                                      {opt.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <Input
-                                value={condition.value}
-                                onChange={(e) =>
-                                  updateCondition(rule.id, condition.id, { value: e.target.value })
-                                }
-                                placeholder="Enter value..."
-                                className="flex-1"
-                              />
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-9 w-9 text-muted-foreground hover:text-destructive"
-                                onClick={() => removeCondition(rule.id, condition.id)}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          </div>
-                        </div>
+                {/* Hard constraints */}
+                <section>
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                        <Lock className="h-4 w-4 text-red-500" />
+                        Hard constraints
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">Non-negotiable rules that must always be enforced</p>
+                    </div>
+                    <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs bg-transparent" onClick={addHardConstraint}>
+                      <Plus className="h-3.5 w-3.5" /> Add rule
+                    </Button>
+                  </div>
+                  <div className="space-y-2">
+                    {hardConstraints.map(constraint => (
+                      <div key={constraint.id} className="flex items-center gap-2 group">
+                        <div className="w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" />
+                        <Input
+                          value={constraint.rule}
+                          onChange={e => setHardConstraints(prev => prev.map(c => c.id === constraint.id ? { ...c, rule: e.target.value } : c))}
+                          className="flex-1 h-9 text-sm"
+                          placeholder="e.g. Max single transaction: $1,000"
+                        />
+                        <Button
+                          variant="ghost" size="icon"
+                          className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                          onClick={() => removeHardConstraint(constraint.id)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
                     ))}
                   </div>
+                </section>
 
-                  {/* Add Condition & Actions */}
-                  <div className="flex items-center justify-between px-5 py-3 bg-muted/30 border-t border-border">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => addCondition(rule.id)}
-                      className="gap-2"
-                    >
-                      <Plus className="h-4 w-4" />
-                      Add condition
+                {/* Soft constraints */}
+                <section>
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                        <Eye className="h-4 w-4 text-amber-500" />
+                        Soft constraints
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">Guidelines the model can interpret with context</p>
+                    </div>
+                    <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs bg-transparent" onClick={addSoftConstraint}>
+                      <Plus className="h-3.5 w-3.5" /> Add guideline
                     </Button>
-                    {policy.rules.length > 1 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeRule(rule.id)}
-                        className="gap-2 text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        Remove rule
-                      </Button>
-                    )}
                   </div>
-                </div>
-
-                {/* Add Step Button */}
-                <div className="flex justify-center py-2">
-                  <div className="flex flex-col items-center">
-                    <div className="w-px h-2 bg-border" />
-                    <button
-                      onClick={addRule}
-                      className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
-                    >
-                      <Plus className="h-4 w-4" />
-                      Add step
-                      <ChevronDown className="h-3 w-3" />
-                    </button>
-                    <div className="w-px h-2 bg-border" />
-                    <ArrowDown className="h-4 w-4 text-muted-foreground" />
+                  <div className="space-y-2">
+                    {softConstraints.map(constraint => (
+                      <div key={constraint.id} className="flex items-center gap-2 group">
+                        <div className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+                        <Input
+                          value={constraint.guideline}
+                          onChange={e => setSoftConstraints(prev => prev.map(c => c.id === constraint.id ? { ...c, guideline: e.target.value } : c))}
+                          className="flex-1 h-9 text-sm"
+                          placeholder="e.g. Prefer vendors with negotiated contract pricing"
+                        />
+                        <Button
+                          variant="ghost" size="icon"
+                          className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                          onClick={() => removeSoftConstraint(constraint.id)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
                   </div>
-                </div>
+                </section>
               </motion.div>
-            ))}
+            )}
 
-            {/* Fallback Node */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-            >
-              <Select
-                value={policy.fallbackAction}
-                onValueChange={(value) => setPolicy((prev) => ({ ...prev, fallbackAction: value }))}
+            {/* ENFORCEMENT TAB */}
+            {activeTab === "enforcement" && (
+              <motion.div
+                key="enforcement"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.2 }}
+                className="space-y-8"
               >
-                <SelectTrigger className="w-full border border-border bg-background shadow-sm">
-                  <div className="flex items-center gap-3 py-2">
-                    <div className="flex items-center justify-center w-8 h-8 rounded-full bg-slate-100">
-                      <ShieldCheck className="h-4 w-4 text-slate-600" />
-                    </div>
-                    <span className="font-medium">
-                      If no conditions are met: {outcomeOptions.find((o) => o.value === policy.fallbackAction)?.label || "Select action"}
-                    </span>
+                {/* Decision outcomes */}
+                <section>
+                  <h3 className="text-sm font-semibold text-foreground mb-1">Decision outcomes</h3>
+                  <p className="text-xs text-muted-foreground mb-4">Define what the agent should do based on the procurement evaluation.</p>
+                  <div className="space-y-3">
+                    {decisionOutcomes.map(outcome => (
+                      <Card key={outcome.id} className="bg-card border-border shadow-sm">
+                        <CardContent className="p-4 flex items-start gap-3">
+                          <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0",
+                            outcome.action === "auto-approve" ? "bg-green-100 dark:bg-green-900/30" :
+                            outcome.action === "approve-with-justification" ? "bg-blue-100 dark:bg-blue-900/30" :
+                            outcome.action === "ask-approval" ? "bg-amber-100 dark:bg-amber-900/30" :
+                            "bg-red-100 dark:bg-red-900/30"
+                          )}>
+                            <outcome.icon className={cn("h-4 w-4", outcome.color)} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className={cn("text-sm font-medium", outcome.color)}>{outcome.label}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">When: {outcome.conditions}</p>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
                   </div>
-                </SelectTrigger>
-                <SelectContent>
-                  {outcomeOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      <div className="flex items-center gap-2">
-                        <option.icon className={cn("h-4 w-4", option.color)} />
-                        {option.label}
+                </section>
+
+                {/* Approver routing */}
+                <section>
+                  <h3 className="text-sm font-semibold text-foreground mb-1 flex items-center gap-2">
+                    <UserCheck className="h-4 w-4" />
+                    Approver routing
+                  </h3>
+                  <p className="text-xs text-muted-foreground mb-4">Who gets notified when procurement approval is needed.</p>
+                  <div className="space-y-2">
+                    {approverRoutes.map(route => (
+                      <div key={route.id} className="flex items-center gap-3 px-4 py-3 rounded-lg border border-border bg-background">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-muted-foreground">{route.condition}</p>
+                        </div>
+                        <ArrowRight className="h-4 w-4 text-muted-foreground/50 flex-shrink-0" />
+                        <Badge variant="secondary" className="text-xs font-medium">{route.approver}</Badge>
                       </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              {/* Add Step under fallback */}
-              <div className="flex justify-center py-2">
-                <div className="flex flex-col items-center">
-                  <div className="w-px h-2 bg-border" />
-                  <button 
-                    onClick={addRule}
-                    className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
-                  >
-                    <Plus className="h-4 w-4" />
-                    Add step
-                    <ChevronDown className="h-3 w-3" />
-                  </button>
-                  <div className="w-px h-2 bg-border" />
-                  <ArrowDown className="h-4 w-4 text-muted-foreground" />
-                </div>
-              </div>
-            </motion.div>
-
-            {/* Outcome Node */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3 }}
-            >
-              <Select
-                value={policy.outcomeAction}
-                onValueChange={(value) => setPolicy((prev) => ({ ...prev, outcomeAction: value }))}
-              >
-                <SelectTrigger className="w-full border-2 border-[#c8e972] bg-[#f8fce8] shadow-sm">
-                  <div className="flex items-center gap-3 py-2">
-                    <div className="flex items-center justify-center w-8 h-8 rounded-full bg-green-100">
-                      <CheckCircle2 className="h-4 w-4 text-green-600" />
-                    </div>
-                    <span className="font-medium text-green-700">
-                      {outcomeOptions.find((o) => o.value === policy.outcomeAction)?.label || "Select outcome"}
-                    </span>
-                    <div className="ml-auto flex items-center gap-2">
-                      <Lock className="h-4 w-4 text-muted-foreground" />
-                      <Badge variant="outline" className="text-xs">
-                        <Clock className="h-3 w-3 mr-1" />
-                        Outcome
-                      </Badge>
-                    </div>
+                    ))}
                   </div>
-                </SelectTrigger>
-                <SelectContent>
-                  {outcomeOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      <div className="flex items-center gap-2">
-                        <option.icon className={cn("h-4 w-4", option.color)} />
-                        {option.label}
+                </section>
+
+                {/* Evidence requirements */}
+                <section>
+                  <h3 className="text-sm font-semibold text-foreground mb-1 flex items-center gap-2">
+                    <FileCheck className="h-4 w-4" />
+                    Evidence requirements
+                  </h3>
+                  <p className="text-xs text-muted-foreground mb-4">What documentation or proof is required for each procurement category.</p>
+                  <div className="space-y-2">
+                    {evidenceRequirements.map(req => (
+                      <div key={req.id} className="flex items-start gap-3 px-4 py-3 rounded-lg border border-border bg-background">
+                        <Badge variant="outline" className="text-xs mt-0.5 flex-shrink-0">{req.category}</Badge>
+                        <p className="text-sm text-muted-foreground">{req.requirements}</p>
                       </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </motion.div>
-          </div>
+                    ))}
+                  </div>
+                </section>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 
-      {/* Right Sidebar */}
-      <div className="hidden lg:block w-80 border-l border-border bg-muted/20 shrink-0">
-        {/* Tabs */}
-        <div className="flex items-center border-b border-border">
-          <div className="flex items-center gap-2 px-4 py-3">
-            <button className="p-1.5 hover:bg-muted rounded">
-              <RotateCcw className="h-4 w-4 text-muted-foreground" />
-            </button>
-            <button className="p-1.5 hover:bg-muted rounded">
-              <RotateCw className="h-4 w-4 text-muted-foreground" />
-            </button>
+      {/* Right sidebar: Simulation panel */}
+      <div className="w-[340px] border-l border-border bg-muted/20 flex flex-col">
+        <div className="px-4 py-3 border-b border-border">
+          <div className="flex items-center gap-2 mb-1">
+            <Play className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-semibold text-foreground">Policy Preview & Simulation</span>
           </div>
-          <div className="flex-1 flex">
-            {(["build", "history", "settings"] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={cn(
-                  "px-4 py-3 text-sm font-medium capitalize transition-colors",
-                  activeTab === tab
-                    ? "text-foreground border-b-2 border-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {tab === "build" ? "Build" : tab === "history" ? "History" : "Settings"}
-              </button>
-            ))}
-          </div>
+          {selectedPolicyId && (
+            <p className="text-xs text-muted-foreground">Testing against: <span className="font-medium text-foreground">{policyName}</span></p>
+          )}
         </div>
 
-        {/* Sidebar Content */}
-        <div className="p-4 space-y-6">
-          {activeTab === "build" && (
-            <>
-              {/* Policy Compliance Card */}
-              {complianceStats && (
-                <div className="mb-6">
-                  <Card className="border border-border/50 bg-gradient-to-br from-background to-muted/20">
-                    <div className="p-5">
-                      <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-sm font-medium text-muted-foreground">In policy spend</h3>
-                        <Badge 
-                          variant="outline" 
-                          className={cn(
-                            "text-xs font-medium",
-                            complianceStats.trend >= 0 
-                              ? "bg-green-50 text-green-700 border-green-200" 
-                              : "bg-red-50 text-red-700 border-red-200"
-                          )}
-                        >
-                          {complianceStats.trend >= 0 ? '+' : ''}{complianceStats.trend}%
-                        </Badge>
-                      </div>
-                      
-                      <div className="mb-4">
-                        <div className="text-4xl font-bold mb-2">
-                          {Math.round(complianceStats.compliancePercentage)}%
-                        </div>
-                        <p className="text-sm text-muted-foreground">
-                          of all spend is within policy
-                        </p>
-                      </div>
-
-                      {/* Progress Bar */}
-                      <div className="relative h-2 bg-muted rounded-full overflow-hidden mb-4">
-                        <div 
-                          className="absolute top-0 left-0 h-full bg-gradient-to-r from-green-500 to-green-600 rounded-full transition-all duration-500"
-                          style={{ width: `${complianceStats.compliancePercentage}%` }}
-                        />
-                      </div>
-
-                      {/* Stats Grid */}
-                      <div className="grid grid-cols-2 gap-3 text-xs">
-                        <div className="p-2 bg-background rounded border border-border/50">
-                          <div className="text-muted-foreground mb-1">Total Spend</div>
-                          <div className="font-semibold">${complianceStats.totalSpend.toFixed(2)}</div>
-                        </div>
-                        <div className="p-2 bg-background rounded border border-border/50">
-                          <div className="text-muted-foreground mb-1">Transactions</div>
-                          <div className="font-semibold">{complianceStats.totalTransactions}</div>
-                        </div>
-                        <div className="p-2 bg-background rounded border border-border/50">
-                          <div className="text-muted-foreground mb-1">Approved</div>
-                          <div className="font-semibold text-green-600">{complianceStats.approvedTransactions}</div>
-                        </div>
-                        <div className="p-2 bg-background rounded border border-border/50">
-                          <div className="text-muted-foreground mb-1">Denied</div>
-                          <div className="font-semibold text-red-600">{complianceStats.deniedTransactions}</div>
-                        </div>
-                      </div>
-                    </div>
-                  </Card>
-                </div>
+        <div className="flex-1 overflow-auto p-4 space-y-5">
+          {/* Scenario input */}
+          <div>
+            <Label className="text-xs font-medium text-muted-foreground mb-1.5 block">Test a scenario</Label>
+            <textarea
+              value={simulationInput}
+              onChange={e => {
+                setSimulationInput(e.target.value)
+                setSimulationResult(null) // Clear previous results
+              }}
+              rows={3}
+              placeholder={'"Purchase 15 Dell Latitude laptops at $1,200 each for new engineering hires. PO-2026-00847, cost center ENG-4200."'}
+              className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none leading-relaxed placeholder:text-muted-foreground/50"
+            />
+            <Button
+              onClick={runSimulation}
+              disabled={!simulationInput.trim() || isSimulating}
+              className="w-full mt-2 gap-2 bg-[#c8e972] hover:bg-[#b8d962] text-black font-medium h-9 text-sm"
+            >
+              {isSimulating ? (
+                <>
+                  <div className="h-3.5 w-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                  Running...
+                </>
+              ) : (
+                <>
+                  <Play className="h-3.5 w-3.5" />
+                  Run simulation
+                </>
               )}
+            </Button>
+          </div>
 
-              <div>
-                <h3 className="font-semibold mb-3">Test workflow</h3>
-                <div className="space-y-4">
-                  <div className="p-4 border border-border rounded-lg bg-background">
-                    <p className="text-sm text-muted-foreground mb-3">
-                      Test this policy with a sample purchase
-                    </p>
-                    <Button
-                      variant="outline"
-                      className="w-full bg-transparent"
-                      onClick={async () => {
-                        try {
-                          const testRequest = {
-                            user_id: "test-user-123",
-                            product_id: "test-product-1",
-                            price: parseFloat(policy.rules[0]?.conditions[0]?.value || "100"),
-                            merchant: "Test Merchant",
-                            category: "Test Category",
-                          }
-                          const result = await apiClient.checkPolicy(testRequest)
-                          toast.success(
-                            result.allowed
-                              ? "✅ Purchase would be ALLOWED"
-                              : `❌ Purchase would be DENIED: ${result.reason}`,
-                            { duration: 5000 }
-                          )
-                        } catch (error: any) {
-                          toast.error(`Test failed: ${error.message}`)
-                        }
-                      }}
-                    >
-                      <Play className="h-4 w-4 mr-2" />
-                      Test with sample purchase
-                    </Button>
+          {/* Simulation result */}
+          <AnimatePresence>
+            {simulationResult && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="space-y-4"
+              >
+                {/* Decision */}
+                <div className="rounded-lg border border-border bg-background p-4">
+                  <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Engine output</div>
+                  <div className={cn("text-base font-semibold mb-1", simulationResult.decisionColor)}>
+                    {simulationResult.decision}
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-relaxed">{simulationResult.reason}</p>
+                  {simulationResult.suggestedAlternative && (
+                    <div className="mt-3 p-2.5 rounded-md bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800/30">
+                      <p className="text-xs text-blue-700 dark:text-blue-400">
+                        <span className="font-medium">Suggested alternative:</span> {simulationResult.suggestedAlternative}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Evidence */}
+                <div className="rounded-lg border border-border bg-background p-4">
+                  <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Evidence attached</div>
+                  <div className="space-y-1.5">
+                    {simulationResult.evidenceAttached.map((item, i) => (
+                      <div key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
+                        <CheckCircle2 className="h-3.5 w-3.5 text-green-500 mt-0.5 flex-shrink-0" />
+                        {item}
+                      </div>
+                    ))}
                   </div>
                 </div>
-              </div>
 
-              <div>
-                <h3 className="font-semibold mb-3">Quick actions</h3>
-                <div className="space-y-2">
-                  <Button
-                    variant="outline"
-                    className="w-full justify-start gap-2 bg-transparent"
-                    onClick={handleNewPolicy}
-                  >
-                    <Plus className="h-4 w-4" />
-                    New workflow
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="w-full justify-start gap-2 bg-transparent"
-                    onClick={() => {
-                      const duplicated = { ...policy, id: `policy-${Date.now()}`, name: `${policy.name} (Copy)` }
-                      setPolicy(duplicated)
-                      setSelectedPolicyId(null)
-                    }}
-                  >
-                    <Copy className="h-4 w-4" />
-                    Duplicate workflow
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="w-full justify-start gap-2 text-destructive hover:text-destructive bg-transparent"
-                    onClick={handleDeletePolicy}
-                    disabled={!selectedPolicyId}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Delete workflow
-                  </Button>
+                {/* Audit trace */}
+                <div className="rounded-lg border border-border bg-background p-4">
+                  <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Audit trace</div>
+                  <div className="space-y-3">
+                    <div>
+                      <span className="text-xs text-muted-foreground">Rules triggered</span>
+                      <div className="flex flex-wrap gap-1.5 mt-1">
+                        {simulationResult.rulesTriggered.length > 0 ? (
+                          simulationResult.rulesTriggered.map(rule => (
+                            <Badge key={rule} variant="secondary" className="text-xs font-mono">{rule}</Badge>
+                          ))
+                        ) : (
+                          <span className="text-xs text-muted-foreground">None</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">Risk score</span>
+                      <div className="flex items-center gap-2">
+                        <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
+                          <div 
+                            className={cn("h-full rounded-full", 
+                              simulationResult.riskScore < 0.3 ? "bg-green-500" :
+                              simulationResult.riskScore < 0.6 ? "bg-amber-500" :
+                              "bg-red-500"
+                            )} 
+                            style={{ width: `${simulationResult.riskScore * 100}%` }} 
+                          />
+                        </div>
+                        <span className={cn("text-xs font-medium",
+                          simulationResult.riskScore < 0.3 ? "text-green-600" :
+                          simulationResult.riskScore < 0.6 ? "text-amber-600" :
+                          "text-red-600"
+                        )}>
+                          {simulationResult.riskScore.toFixed(2)} ({simulationResult.riskScore < 0.3 ? 'low' : simulationResult.riskScore < 0.6 ? 'medium' : 'high'})
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">Model confidence</span>
+                      <div className="flex items-center gap-2">
+                        <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
+                          <div className="h-full bg-primary rounded-full" style={{ width: `${simulationResult.confidence * 100}%` }} />
+                        </div>
+                        <span className="text-xs font-medium text-foreground">{(simulationResult.confidence * 100).toFixed(0)}%</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </>
-          )}
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          {activeTab === "history" && (
-            <div className="text-center py-8 text-muted-foreground">
-              <History className="h-8 w-8 mx-auto mb-3 opacity-50" />
-              <p className="text-sm">No history yet</p>
-              <p className="text-xs mt-1">Changes to this workflow will appear here</p>
-            </div>
-          )}
-
-          {activeTab === "settings" && (
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm font-medium mb-2 block">Policy name</label>
-                <Input
-                  value={policy.name}
-                  onChange={(e) => setPolicy((prev) => ({ ...prev, name: e.target.value }))}
-                  placeholder="Enter a descriptive name for this policy..."
-                  className="w-full"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Give your policy a clear, descriptive name to easily identify it later.
-                </p>
+          {/* Empty state */}
+          {!simulationResult && !isSimulating && (
+            <div className="text-center py-8">
+              <div className="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center mx-auto mb-3">
+                <Play className="h-5 w-5 text-muted-foreground" />
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Active</span>
-                <button
-                  onClick={() => setPolicy((prev) => ({ ...prev, isActive: !prev.isActive }))}
-                  className={cn(
-                    "relative w-11 h-6 rounded-full transition-colors",
-                    policy.isActive ? "bg-primary" : "bg-muted"
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform",
-                      policy.isActive && "translate-x-5"
-                    )}
-                  />
-                </button>
-              </div>
+              <p className="text-sm text-muted-foreground">Paste a procurement scenario above to see how this policy would respond</p>
+              <p className="text-xs text-muted-foreground/70 mt-1">Results include decision, reasoning, evidence, and audit trace</p>
             </div>
           )}
         </div>

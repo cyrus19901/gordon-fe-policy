@@ -1,6 +1,7 @@
 // API Client for Agentic Commerce Backend
+// Uses Next.js API proxy to automatically include user session
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+const API_BASE_URL = '/api/proxy'; // Proxy through Next.js API routes
 const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || '';
 
 export interface BackendPolicy {
@@ -9,6 +10,8 @@ export interface BackendPolicy {
   type: 'budget' | 'transaction' | 'merchant' | 'category' | 'time' | 'agent' | 'purpose' | 'composite';
   enabled: boolean;
   priority: number;
+  // NEW: Transaction type scoping
+  transactionTypes?: ('agent-to-merchant' | 'agent-to-agent' | 'all')[];
   conditions: {
     users?: string[];
     departments?: string[];
@@ -32,6 +35,13 @@ export interface BackendPolicy {
     blockedAgentTypes?: string[];
     allowedRecipientAgents?: string[];
     blockedRecipientAgents?: string[];
+    allowedRecipientAgentTypes?: string[];
+    blockedRecipientAgentTypes?: string[];
+    // Service-based rules (for agent-to-agent)
+    allowedServiceTypes?: string[];
+    blockedServiceTypes?: string[];
+    allowedServiceCategories?: string[];
+    blockedServiceCategories?: string[];
     // Purpose-based rules
     allowedPurposes?: string[];
     blockedPurposes?: string[];
@@ -69,11 +79,18 @@ export interface SpendingSummary {
 export interface Purchase {
   id: number;
   userId: string;
-  productId: string;
+  transactionType?: 'agent-to-merchant' | 'agent-to-agent';
+  // Agent-to-Merchant fields
+  productId?: string;
   productName?: string;
-  amount: number;
-  merchant: string;
+  merchant?: string;
   category?: string;
+  // Agent-to-Agent fields
+  serviceType?: string;
+  recipientAgentId?: string;
+  buyerAgentId?: string;
+  // Common fields
+  amount: number;
   allowed: boolean;
   requiresApproval?: boolean;
   policyResults: Array<{
@@ -100,9 +117,13 @@ async function fetchWithAuth(url: string, options: RequestInit = {}) {
   }
   headers.set('Content-Type', 'application/json');
 
-  const response = await fetch(`${API_BASE_URL}${url}`, {
+  // Remove /api prefix if present (proxy will add it back)
+  const cleanUrl = url.startsWith('/api/') ? url.substring(4) : url;
+
+  const response = await fetch(`${API_BASE_URL}${cleanUrl}`, {
     ...options,
     headers,
+    credentials: 'include', // Include cookies for session
   });
 
   if (!response.ok) {
@@ -150,10 +171,17 @@ export const apiClient = {
   // Policy Checking
   async checkPolicy(request: {
     user_id: string;
-    product_id: string;
+    product_id?: string;  // Optional for A2A transactions
     price: number;
-    merchant: string;
+    merchant?: string;    // Optional for A2A (uses agentId instead)
     category?: string;
+    // New fields for transaction type support
+    transaction_type?: 'agent-to-merchant' | 'agent-to-agent';
+    serviceType?: string; // For A2A service categorization
+    // A2A specific fields
+    recipientAgentId?: string;
+    buyerAgentId?: string;
+    purpose?: string;
   }): Promise<PolicyCheckResult> {
     return fetchWithAuth('/api/policy/check', {
       method: 'POST',
@@ -235,6 +263,48 @@ export const apiClient = {
     
     const response = await fetchWithAuth(url);
     return response.analytics;
+  },
+
+  // Reviewer Management
+  async getReviewers(): Promise<Array<{ id: string; email: string; name?: string; role: string; active: boolean }>> {
+    const response = await fetchWithAuth('/api/reviewers');
+    return response.reviewers || [];
+  },
+
+  async addReviewer(userId: string, role: string = 'reviewer'): Promise<void> {
+    await fetchWithAuth('/api/reviewers', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, role }),
+    });
+  },
+
+  async updateReviewerRole(userId: string, role: string): Promise<void> {
+    await fetchWithAuth(`/api/reviewers/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ role }),
+    });
+  },
+
+  async removeReviewer(userId: string): Promise<void> {
+    await fetchWithAuth(`/api/reviewers/${userId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // User Management
+  async getUsers(): Promise<Array<{ id: string; email: string; name?: string; role?: string }>> {
+    const response = await fetchWithAuth('/api/users');
+    return response.users || [];
+  },
+
+  // Invoices
+  async getInvoices(userId?: string, limit: number = 50): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (userId) params.append('user_id', userId);
+    params.append('limit', limit.toString());
+    
+    const response = await fetchWithAuth(`/api/invoices?${params.toString()}`);
+    return response.invoices || [];
   },
 
   // Health check

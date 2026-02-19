@@ -2,7 +2,7 @@
 
 import React from "react"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
 import { Card, CardContent } from "@/components/ui/card"
 import {
@@ -16,6 +16,7 @@ import {
   Server,
   Bot,
 } from "lucide-react"
+import { apiClient } from "@/lib/api-client"
 
 type TransactionType = "all" | "agent-to-agent" | "agent-to-merchant"
 
@@ -115,13 +116,58 @@ function formatFullCurrency(amount: number): string {
 }
 
 export function SpendBreakdownSection() {
+  const useMockData = process.env.NEXT_PUBLIC_USE_MOCK_DATA === 'true';
+  
   const [filter, setFilter] = useState<TransactionType>("all")
   const [hoveredCategory, setHoveredCategory] = useState<string | null>(null)
+  const [realSpending, setRealSpending] = useState<{agentToMerchant: number; agentToAgent: number} | null>(null)
+  const [realCategories, setRealCategories] = useState<Array<{category: string; amount: number; transactionType: string}> | null>(null)
+  const [isLoading, setIsLoading] = useState(!useMockData)
 
-  // Calculate totals
-  const totalAgentToAgent = spendCategories.reduce((sum, cat) => sum + cat.agentToAgent, 0)
-  const totalAgentToMerchant = spendCategories.reduce((sum, cat) => sum + cat.agentToMerchant, 0)
+  // Fetch real spending data
+  useEffect(() => {
+    if (!useMockData) {
+      const fetchSpending = async () => {
+        try {
+          setIsLoading(true);
+          const response = await fetch(`/api/proxy/dashboard`, {
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            credentials: 'include', // Include session cookie
+          });
+          const data = await response.json();
+          
+          if (data.spendingByType) {
+            setRealSpending({
+              agentToMerchant: data.spendingByType.agentToMerchant || 0,
+              agentToAgent: data.spendingByType.agentToAgent || 0
+            });
+          }
+          
+          if (data.spendingByCategory) {
+            setRealCategories(data.spendingByCategory);
+            console.log('Category breakdown:', data.spendingByCategory);
+          }
+        } catch (error) {
+          console.error('Failed to fetch spending data:', error);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      fetchSpending();
+    }
+  }, [useMockData]);
+
+  // Use real data if available, otherwise use mock data
+  const hasRealData = realSpending && (realSpending.agentToAgent > 0 || realSpending.agentToMerchant > 0);
+  const totalAgentToAgent = hasRealData ? realSpending.agentToAgent : spendCategories.reduce((sum, cat) => sum + cat.agentToAgent, 0);
+  const totalAgentToMerchant = hasRealData ? realSpending.agentToMerchant : spendCategories.reduce((sum, cat) => sum + cat.agentToMerchant, 0);
   const totalBudget = totalAgentToAgent + totalAgentToMerchant
+  const showingSampleData = !hasRealData && !isLoading
+  
+  // Use real categories if available
+  const showCategoryBreakdown = realCategories && realCategories.length > 0
 
   // Get filtered categories with their amounts
   const getFilteredAmount = (cat: SpendCategory) => {
@@ -130,10 +176,43 @@ export function SpendBreakdownSection() {
     return cat.agentToAgent + cat.agentToMerchant
   }
 
-  const filteredCategories = spendCategories
-    .map((cat) => ({ ...cat, amount: getFilteredAmount(cat) }))
-    .filter((cat) => cat.amount > 0)
-    .sort((a, b) => b.amount - a.amount)
+  // Map real categories to display format
+  const getRealCategoryIcon = (category: string) => {
+    const lowerCat = category.toLowerCase();
+    if (lowerCat.includes('cloud') || lowerCat.includes('computing')) return Cloud;
+    if (lowerCat.includes('ai') || lowerCat.includes('ml')) return Cpu;
+    if (lowerCat.includes('storage') || lowerCat.includes('database')) return Database;
+    if (lowerCat.includes('software') || lowerCat.includes('api')) return Code2;
+    if (lowerCat.includes('infrastructure') || lowerCat.includes('server')) return Server;
+    return ShoppingCart;
+  };
+
+  const getRealCategoryColor = (index: number) => {
+    const colors = ['#3b82f6', '#8b5cf6', '#10b981', '#f97316', '#64748b', '#0ea5e9', '#ec4899', '#f59e0b'];
+    return colors[index % colors.length];
+  };
+
+  const filteredCategories = showCategoryBreakdown && realCategories
+    ? realCategories
+        .filter((cat) => {
+          if (filter === "agent-to-agent") return cat.transactionType === "agent-to-agent";
+          if (filter === "agent-to-merchant") return cat.transactionType === "agent-to-merchant";
+          return true;
+        })
+        .map((cat, idx) => ({
+          id: cat.category.toLowerCase().replace(/\s+/g, '-'),
+          name: cat.category,
+          icon: getRealCategoryIcon(cat.category),
+          color: getRealCategoryColor(idx),
+          amount: cat.amount,
+          agentToAgent: cat.transactionType === 'agent-to-agent' ? cat.amount : 0,
+          agentToMerchant: cat.transactionType === 'agent-to-merchant' ? cat.amount : 0,
+        }))
+        .sort((a, b) => b.amount - a.amount)
+    : spendCategories
+        .map((cat) => ({ ...cat, amount: getFilteredAmount(cat) }))
+        .filter((cat) => cat.amount > 0)
+        .sort((a, b) => b.amount - a.amount)
 
   const filteredTotal =
     filter === "agent-to-agent"
@@ -198,10 +277,24 @@ export function SpendBreakdownSection() {
       <Card className="border border-border shadow-sm bg-card">
         <CardContent className="p-6">
           <div className="flex items-center justify-between mb-6">
-            <div>
-              <h2 className="text-lg font-semibold text-foreground">Spend Flow</h2>
-              <p className="text-sm text-muted-foreground">
-                Visualize how budget flows through transaction types to spending categories
+            <div className="flex-1">
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-semibold text-foreground">Spend Flow</h2>
+                {showingSampleData && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-100 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                    </span>
+                    <span className="text-xs font-medium text-amber-700 dark:text-amber-300">Sample Data</span>
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-muted-foreground mt-1">
+                {showingSampleData 
+                  ? "Example visualization - start making transactions to see your actual spend flow"
+                  : "Visualize how budget flows through transaction types to spending categories"
+                }
               </p>
             </div>
 
@@ -247,9 +340,16 @@ export function SpendBreakdownSection() {
 
           {/* Sankey Diagram */}
           <div className="relative overflow-hidden">
+            {showingSampleData && (
+              <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-10 bg-amber-50/90 dark:bg-amber-900/20 backdrop-blur-sm border border-amber-200 dark:border-amber-800 rounded-lg px-4 py-2 shadow-sm">
+                <p className="text-xs text-amber-700 dark:text-amber-300 font-medium text-center">
+                  📊 This is example data to show how your spend flow will look
+                </p>
+              </div>
+            )}
             <svg
               viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-              className="w-full h-auto min-h-[350px]"
+              className={`w-full h-auto min-h-[350px] ${showingSampleData ? 'opacity-75' : ''}`}
             >
               <defs>
                 {categoryNodes.map((cat) => (
@@ -300,83 +400,97 @@ export function SpendBreakdownSection() {
               {/* Middle Nodes - Transaction Types (only show when filter is "all") */}
               {filter === "all" && (
                 <g>
-                  {/* Agent to Merchant */}
-                  <rect
-                    x={middleX}
-                    y={budgetNodeY}
-                    width={nodeWidth}
-                    height={a2mHeight}
-                    fill="#3b82f6"
-                    rx={4}
-                  />
-                  <text
-                    x={middleX + nodeWidth + 10}
-                    y={budgetNodeY + a2mHeight / 2 - 8}
-                    className="fill-foreground text-xs font-medium"
-                    dominantBaseline="middle"
-                  >
-                    Agent to Merchant
-                  </text>
-                  <text
-                    x={middleX + nodeWidth + 10}
-                    y={budgetNodeY + a2mHeight / 2 + 8}
-                    className="fill-muted-foreground text-xs"
-                    dominantBaseline="middle"
-                  >
-                    {formatFullCurrency(totalAgentToMerchant)}
-                  </text>
+                  {totalAgentToMerchant > 0 && (
+                    <>
+                      {/* Agent to Merchant */}
+                      <rect
+                        x={middleX}
+                        y={budgetNodeY}
+                        width={nodeWidth}
+                        height={a2mHeight}
+                        fill="#3b82f6"
+                        rx={4}
+                      />
+                      <text
+                        x={middleX + nodeWidth + 10}
+                        y={budgetNodeY + a2mHeight / 2 - 8}
+                        className="fill-foreground text-xs font-medium"
+                        dominantBaseline="middle"
+                        textAnchor="start"
+                      >
+                        Agent to Merchant
+                      </text>
+                      <text
+                        x={middleX + nodeWidth + 10}
+                        y={budgetNodeY + a2mHeight / 2 + 8}
+                        className="fill-muted-foreground text-xs"
+                        dominantBaseline="middle"
+                        textAnchor="start"
+                      >
+                        {formatFullCurrency(totalAgentToMerchant)}
+                      </text>
 
-                  {/* Agent to Agent */}
-                  <rect
-                    x={middleX}
-                    y={budgetNodeY + a2mHeight + 10}
-                    width={nodeWidth}
-                    height={a2aHeight}
-                    fill="#8b5cf6"
-                    rx={4}
-                  />
-                  <text
-                    x={middleX + nodeWidth + 10}
-                    y={budgetNodeY + a2mHeight + 10 + a2aHeight / 2 - 8}
-                    className="fill-foreground text-xs font-medium"
-                    dominantBaseline="middle"
-                  >
-                    Agent to Agent
-                  </text>
-                  <text
-                    x={middleX + nodeWidth + 10}
-                    y={budgetNodeY + a2mHeight + 10 + a2aHeight / 2 + 8}
-                    className="fill-muted-foreground text-xs"
-                    dominantBaseline="middle"
-                  >
-                    {formatFullCurrency(totalAgentToAgent)}
-                  </text>
+                      {/* Flow from Budget to A2M */}
+                      <path
+                        d={generatePath(
+                          leftX + nodeWidth,
+                          budgetNodeY,
+                          a2mHeight,
+                          middleX,
+                          budgetNodeY,
+                          a2mHeight
+                        )}
+                        fill="#3b82f6"
+                        fillOpacity={0.3}
+                      />
+                    </>
+                  )}
 
-                  {/* Flow from Budget to Transaction Types */}
-                  <path
-                    d={generatePath(
-                      leftX + nodeWidth,
-                      budgetNodeY,
-                      a2mHeight,
-                      middleX,
-                      budgetNodeY,
-                      a2mHeight
-                    )}
-                    fill="#3b82f6"
-                    fillOpacity={0.3}
-                  />
-                  <path
-                    d={generatePath(
-                      leftX + nodeWidth,
-                      budgetNodeY + a2mHeight,
-                      a2aHeight,
-                      middleX,
-                      budgetNodeY + a2mHeight + 10,
-                      a2aHeight
-                    )}
-                    fill="#8b5cf6"
-                    fillOpacity={0.3}
-                  />
+                  {totalAgentToAgent > 0 && (
+                    <>
+                      {/* Agent to Agent */}
+                      <rect
+                        x={middleX}
+                        y={budgetNodeY + a2mHeight + (totalAgentToMerchant > 0 ? 10 : 0)}
+                        width={nodeWidth}
+                        height={a2aHeight}
+                        fill="#8b5cf6"
+                        rx={4}
+                      />
+                      <text
+                        x={middleX + nodeWidth + 10}
+                        y={budgetNodeY + a2mHeight + (totalAgentToMerchant > 0 ? 10 : 0) + a2aHeight / 2 - 8}
+                        className="fill-foreground text-xs font-medium"
+                        dominantBaseline="middle"
+                        textAnchor="start"
+                      >
+                        Agent to Agent
+                      </text>
+                      <text
+                        x={middleX + nodeWidth + 10}
+                        y={budgetNodeY + a2mHeight + (totalAgentToMerchant > 0 ? 10 : 0) + a2aHeight / 2 + 8}
+                        className="fill-muted-foreground text-xs"
+                        dominantBaseline="middle"
+                        textAnchor="start"
+                      >
+                        {formatFullCurrency(totalAgentToAgent)}
+                      </text>
+
+                      {/* Flow from Budget to A2A */}
+                      <path
+                        d={generatePath(
+                          leftX + nodeWidth,
+                          budgetNodeY + a2mHeight,
+                          a2aHeight,
+                          middleX,
+                          budgetNodeY + a2mHeight + (totalAgentToMerchant > 0 ? 10 : 0),
+                          a2aHeight
+                        )}
+                        fill="#8b5cf6"
+                        fillOpacity={0.3}
+                      />
+                    </>
+                  )}
                 </g>
               )}
 

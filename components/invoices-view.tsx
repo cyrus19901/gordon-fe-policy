@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   Link2,
 } from "lucide-react"
+import { apiClient } from "@/lib/api-client"
 
 interface Invoice {
   id: string
@@ -84,13 +85,75 @@ const mockInvoices: Invoice[] = [
   },
 ]
 
+// Helper function to map API purchases to Invoice format
+function mapPurchaseToInvoice(purchase: any): Invoice {
+  const isA2A = purchase.transaction_type === 'agent-to-agent';
+  const vendor = isA2A ? (purchase.recipientAgentId || 'Agent Service') : (purchase.merchant || 'Unknown Merchant');
+  
+  return {
+    id: purchase.id.toString(),
+    vendor,
+    vendorEmail: isA2A ? 'service@agent.com' : `billing@${vendor.toLowerCase().replace(/\s+/g, '')}.com`,
+    vendorLogo: 'expedia', // Default, can be customized
+    amount: `$${purchase.amount.toFixed(2)}`,
+    dueDate: new Date(purchase.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    invoiceNumber: `INV-${purchase.id}`,
+    invoiceDate: new Date(purchase.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    description: isA2A 
+      ? `${purchase.serviceType || 'Service'} - ${purchase.category || 'Agent Service'}`
+      : `${purchase.product_name || purchase.category || 'Purchase'}`,
+    lineItems: [
+      {
+        item: isA2A ? (purchase.serviceType || 'Service') : (purchase.product_name || 'Item'),
+        quantity: 1,
+        rate: `$${purchase.amount.toFixed(2)}`,
+        amount: `$${purchase.amount.toFixed(2)}`,
+      },
+    ],
+    subtotal: `$${(purchase.amount * 0.93).toFixed(2)}`, // Estimate before tax
+    tax: `$${(purchase.amount * 0.07).toFixed(2)}`, // Estimate 7% tax
+    total: `$${purchase.amount.toFixed(2)}`,
+  };
+}
+
 export function InvoicesView() {
+  const useMockData = process.env.NEXT_PUBLIC_USE_MOCK_DATA === 'true';
+  
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>("1")
   const [showMissingInfo, setShowMissingInfo] = useState(true)
   const [selectedErp, setSelectedErp] = useState<string>("")
   const [syncStatus, setSyncStatus] = useState<Record<string, "idle" | "syncing" | "synced">>({})
   const [isSyncingAll, setIsSyncingAll] = useState(false)
+  const [invoices, setInvoices] = useState<Invoice[]>(mockInvoices)
+  const [isLoading, setIsLoading] = useState(!useMockData)
+
+  // Fetch real invoices from API if not using mock data
+  useEffect(() => {
+    if (!useMockData) {
+      const fetchInvoices = async () => {
+        try {
+          setIsLoading(true);
+          const data = await apiClient.getInvoices(undefined, 100);
+          const mappedInvoices = data.map(mapPurchaseToInvoice);
+          setInvoices(mappedInvoices);
+          if (mappedInvoices.length > 0) {
+            setSelectedInvoiceId(mappedInvoices[0].id);
+          }
+        } catch (error) {
+          console.error('Failed to fetch invoices:', error);
+          // Fallback to mock data on error
+          setInvoices(mockInvoices);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      fetchInvoices();
+    } else {
+      setInvoices(mockInvoices);
+      setIsLoading(false);
+    }
+  }, [useMockData]);
 
   const erpSystems = [
     { id: "quickbooks", name: "QuickBooks", icon: "QB" },
@@ -121,7 +184,7 @@ export function InvoicesView() {
   const handleSyncAll = async () => {
     if (!selectedErp) return
     setIsSyncingAll(true)
-    for (const invoice of mockInvoices) {
+    for (const invoice of invoices) {
       setSyncStatus((prev) => ({ ...prev, [invoice.id]: "syncing" }))
       await new Promise((resolve) => setTimeout(resolve, 800))
       setSyncStatus((prev) => ({ ...prev, [invoice.id]: "synced" }))
@@ -129,9 +192,9 @@ export function InvoicesView() {
     setIsSyncingAll(false)
   }
 
-  const selectedInvoice = mockInvoices.find((inv) => inv.id === selectedInvoiceId) || mockInvoices[0]
+  const selectedInvoice = invoices.find((inv) => inv.id === selectedInvoiceId) || invoices[0]
 
-  const filteredInvoices = mockInvoices.filter((invoice) => {
+  const filteredInvoices = invoices.filter((invoice) => {
     if (searchQuery) {
       const query = searchQuery.toLowerCase()
       return (
@@ -157,8 +220,44 @@ export function InvoicesView() {
     )
   }
 
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-[calc(100vh-120px)] bg-background rounded-lg border border-border">
+        <div className="text-center">
+          <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-4 text-muted-foreground" />
+          <p className="text-muted-foreground">Loading invoices...</p>
+          <p className="text-xs text-muted-foreground mt-2">
+            {useMockData ? 'Using mock data' : 'Fetching from API'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (invoices.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-[calc(100vh-120px)] bg-background rounded-lg border border-border">
+        <div className="text-center">
+          <p className="text-muted-foreground mb-2">No invoices found</p>
+          <p className="text-xs text-muted-foreground">
+            {useMockData ? 'Mock data is empty' : 'No transactions in database yet'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-[calc(100vh-120px)] bg-background rounded-lg border border-border overflow-hidden">
+      {/* Feature Flag Indicator */}
+      {useMockData && (
+        <div className="px-6 py-2 bg-yellow-500/10 border-b border-yellow-500/20">
+          <p className="text-xs text-yellow-700 dark:text-yellow-400">
+            ⚠️ Using mock data - Set NEXT_PUBLIC_USE_MOCK_DATA=false to use real API data
+          </p>
+        </div>
+      )}
+      
       {/* Top ERP Sync Bar */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-muted/30">
         <div className="flex items-center gap-4">
