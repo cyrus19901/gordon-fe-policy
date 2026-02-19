@@ -44,7 +44,11 @@ export async function POST(request: NextRequest) {
     // If bypassing OTP, create user in database and session
     if (BYPASS_OTP) {
       // Create or get user from backend database
-      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      
+      // Derive name from email
+      const namePart = normalizedEmail.split('@')[0];
+      const userName = namePart.charAt(0).toUpperCase() + namePart.slice(1).replace(/[._-]/g, ' ');
       
       let user;
       try {
@@ -55,6 +59,8 @@ export async function POST(request: NextRequest) {
           },
           body: JSON.stringify({
             email: normalizedEmail,
+            name: userName,
+            role: 'admin', // Policy manager users get admin role
           }),
         });
 

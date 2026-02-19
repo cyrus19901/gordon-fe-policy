@@ -91,40 +91,78 @@ export function PolicyHomeView({ onNavigate }: PolicyHomeViewProps) {
       isDefault: true,
       allocations: 63,
       programs: 2,
-      members: [
-        { id: "1", name: "Sarah Chen", email: "sarah@company.com", role: "Admin" },
-        { id: "2", name: "Michael Park", email: "michael@company.com", role: "Manager" },
-        { id: "3", name: "Emily Johnson", email: "emily@company.com", role: "Reviewer" },
-      ],
+      members: [],
     },
   ])
 
-  const handleAddMember = () => {
+  // Fetch reviewers from API
+  useEffect(() => {
+    const loadReviewers = async () => {
+      try {
+        const reviewers = await apiClient.getReviewers()
+        setApprovalPolicies(prev => prev.map(policy => ({
+          ...policy,
+          members: reviewers.map(r => ({
+            id: r.id,
+            name: r.name || r.email.split('@')[0],
+            email: r.email,
+            role: r.role === 'admin' ? 'Admin' : r.role === 'manager' ? 'Manager' : 'Reviewer',
+          })),
+        })))
+      } catch (error) {
+        console.error('Failed to load reviewers:', error)
+      }
+    }
+    loadReviewers()
+  }, [])
+
+  const handleAddMember = async () => {
     if (!newMemberEmail) return
     
-    const newMember: ApprovedMember = {
-      id: Date.now().toString(),
-      name: newMemberEmail.split("@")[0].replace(/\./g, " ").replace(/\b\w/g, l => l.toUpperCase()),
-      email: newMemberEmail,
-      role: newMemberRole === "admin" ? "Admin" : newMemberRole === "manager" ? "Manager" : "Reviewer",
+    try {
+      // First, check if user exists or create them
+      const users = await apiClient.getUsers()
+      let userId = users.find(u => u.email === newMemberEmail)?.id
+      
+      if (!userId) {
+        // User doesn't exist - would need a create user endpoint
+        console.error('User not found. Please create user first.')
+        return
+      }
+      
+      await apiClient.addReviewer(userId, newMemberRole)
+      
+      const newMember: ApprovedMember = {
+        id: userId,
+        name: newMemberEmail.split("@")[0].replace(/\./g, " ").replace(/\b\w/g, l => l.toUpperCase()),
+        email: newMemberEmail,
+        role: newMemberRole === "admin" ? "Admin" : newMemberRole === "manager" ? "Manager" : "Reviewer",
+      }
+      
+      setApprovalPolicies(prev => prev.map(policy => ({
+        ...policy,
+        members: [...policy.members, newMember],
+      })))
+      
+      setNewMemberEmail("")
+      setNewMemberRole("reviewer")
+      setShowAddMember(false)
+    } catch (error) {
+      console.error('Failed to add reviewer:', error)
     }
-    
-    setApprovalPolicies(prev => prev.map(policy => ({
-      ...policy,
-      members: [...policy.members, newMember],
-    })))
-    
-    setNewMemberEmail("")
-    setNewMemberRole("reviewer")
-    setShowAddMember(false)
   }
 
-  const handleRemoveMember = (policyId: string, memberId: string) => {
-    setApprovalPolicies(prev => prev.map(policy => 
-      policy.id === policyId 
+  const handleRemoveMember = async (policyId: string, memberId: string) => {
+    try {
+      await apiClient.removeReviewer(memberId)
+      setApprovalPolicies(prev => prev.map(policy => 
+        policy.id === policyId 
         ? { ...policy, members: policy.members.filter(m => m.id !== memberId) }
         : policy
-    ))
+      ))
+    } catch (error) {
+      console.error('Failed to remove reviewer:', error)
+    }
   }
 
   const policyData = {
@@ -223,16 +261,26 @@ export function PolicyHomeView({ onNavigate }: PolicyHomeViewProps) {
   }
 
   // Map backend approvals to UI format
-  const pendingApprovalRequests = pendingApprovals.map((approval) => ({
-    id: approval.id.toString(),
-    requester: approval.category || "Agent",
-    amount: approval.amount,
-    vendor: approval.merchant,
-    category: approval.category || "General",
-    submittedAt: formatTimestamp(approval.timestamp),
-    urgency: approval.amount > 1000 ? "high" : approval.amount > 500 ? "medium" : "low",
-    description: approval.productName || `Purchase from ${approval.merchant}`,
-  }))
+  const pendingApprovalRequests = pendingApprovals.map((approval) => {
+    const isA2A = approval.transactionType === 'agent-to-agent';
+    const vendor = isA2A 
+      ? (approval.recipientAgentId || 'Agent Service')
+      : (approval.merchant || 'Unknown Merchant');
+    const description = isA2A
+      ? `${approval.serviceType || 'Service'} from ${vendor}`
+      : (approval.productName || `Purchase from ${vendor}`);
+    
+    return {
+      id: approval.id.toString(),
+      requester: approval.category || approval.serviceType || "Agent",
+      amount: approval.amount,
+      vendor,
+      category: approval.category || approval.serviceType || "General",
+      submittedAt: formatTimestamp(approval.timestamp),
+      urgency: approval.amount > 1000 ? "high" : approval.amount > 500 ? "medium" : "low",
+      description,
+    };
+  })
 
   const spendControls = [
     {

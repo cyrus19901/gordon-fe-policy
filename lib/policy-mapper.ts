@@ -54,8 +54,15 @@ export function frontendToBackendPolicy(frontend: FrontendPolicy): BackendPolicy
   const hasCategory = allConditions.some(c => c.field === 'merchant_category');
   const hasTime = allConditions.some(c => c.field === 'time_of_day');
   const hasDayOfWeek = allConditions.some(c => c.field === 'day_of_week');
-  const hasAgent = allConditions.some(c => c.field === 'agent_name' || c.field === 'agent_type' || c.field === 'recipient_agent');
-  const hasPurpose = allConditions.some(c => c.field === 'purpose');
+  const hasAgent = allConditions.some(c => 
+    c.field === 'buyer_agent_name' || c.field === 'buyer_agent_type' || 
+    c.field === 'service_provider' || c.field === 'service_provider_type' ||
+    c.field === 'recipient_agent' || c.field === 'recipient_agent_type' || // Legacy
+    c.field === 'agent_name' || c.field === 'agent_type' // Legacy support
+  );
+  const hasServiceType = allConditions.some(c => c.field === 'service_type');
+  const hasServiceCategory = allConditions.some(c => c.field === 'service_category');
+  const hasPurpose = allConditions.some(c => c.field === 'purpose' || c.field === 'service_purpose');
   const hasFrequency = allConditions.some(c => c.field === 'frequency');
 
   // Determine primary policy type
@@ -198,11 +205,20 @@ export function frontendToBackendPolicy(frontend: FrontendPolicy): BackendPolicy
     }
   }
 
-  // Process agent conditions
+  // Process agent conditions (supports service-oriented and legacy field names)
   if (hasAgent) {
-    const agentNameConditions = allConditions.filter(c => c.field === 'agent_name');
-    const agentTypeConditions = allConditions.filter(c => c.field === 'agent_type');
-    const recipientConditions = allConditions.filter(c => c.field === 'recipient_agent');
+    const agentNameConditions = allConditions.filter(c => 
+      c.field === 'buyer_agent_name' || c.field === 'agent_name'
+    );
+    const agentTypeConditions = allConditions.filter(c => 
+      c.field === 'buyer_agent_type' || c.field === 'agent_type'
+    );
+    const recipientConditions = allConditions.filter(c => 
+      c.field === 'service_provider' || c.field === 'recipient_agent'
+    );
+    const recipientTypeConditions = allConditions.filter(c => 
+      c.field === 'service_provider_type' || c.field === 'recipient_agent_type'
+    );
 
     // Agent names
     const allowedAgentNames: string[] = [];
@@ -237,17 +253,68 @@ export function frontendToBackendPolicy(frontend: FrontendPolicy): BackendPolicy
       }
     });
 
+    // Recipient agent types
+    const allowedRecipientTypes: string[] = [];
+    const blockedRecipientTypes: string[] = [];
+    recipientTypeConditions.forEach(cond => {
+      if (cond.operator === 'equals' || cond.operator === 'in_list') {
+        allowedRecipientTypes.push(cond.value);
+      } else if (cond.operator === 'not_equals' || cond.operator === 'not_contains') {
+        blockedRecipientTypes.push(cond.value);
+      }
+    });
+
     if (allowedAgentNames.length > 0) rules.allowedAgentNames = allowedAgentNames;
     if (blockedAgentNames.length > 0) rules.blockedAgentNames = blockedAgentNames;
     if (allowedAgentTypes.length > 0) rules.allowedAgentTypes = allowedAgentTypes;
     if (blockedAgentTypes.length > 0) rules.blockedAgentTypes = blockedAgentTypes;
     if (allowedRecipients.length > 0) rules.allowedRecipientAgents = allowedRecipients;
     if (blockedRecipients.length > 0) rules.blockedRecipientAgents = blockedRecipients;
+    if (allowedRecipientTypes.length > 0) rules.allowedRecipientAgentTypes = allowedRecipientTypes;
+    if (blockedRecipientTypes.length > 0) rules.blockedRecipientAgentTypes = blockedRecipientTypes;
   }
 
-  // Process purpose conditions
+  // Process service type conditions (for Agent-to-Agent)
+  if (hasServiceType) {
+    const serviceTypeConditions = allConditions.filter(c => c.field === 'service_type');
+    const allowed: string[] = [];
+    const blocked: string[] = [];
+    
+    serviceTypeConditions.forEach(cond => {
+      if (cond.operator === 'equals' || cond.operator === 'in_list') {
+        allowed.push(cond.value);
+      } else if (cond.operator === 'not_equals' || cond.operator === 'not_contains') {
+        blocked.push(cond.value);
+      }
+    });
+
+    if (allowed.length > 0) rules.allowedServiceTypes = allowed;
+    if (blocked.length > 0) rules.blockedServiceTypes = blocked;
+  }
+
+  // Process service category conditions (for Agent-to-Agent)
+  if (hasServiceCategory) {
+    const serviceCategoryConditions = allConditions.filter(c => c.field === 'service_category');
+    const allowed: string[] = [];
+    const blocked: string[] = [];
+    
+    serviceCategoryConditions.forEach(cond => {
+      if (cond.operator === 'equals' || cond.operator === 'in_list') {
+        allowed.push(cond.value);
+      } else if (cond.operator === 'not_equals' || cond.operator === 'not_contains') {
+        blocked.push(cond.value);
+      }
+    });
+
+    if (allowed.length > 0) rules.allowedServiceCategories = allowed;
+    if (blocked.length > 0) rules.blockedServiceCategories = blocked;
+  }
+
+  // Process purpose conditions (supports both 'purpose' and 'service_purpose')
   if (hasPurpose) {
-    const purposeConditions = allConditions.filter(c => c.field === 'purpose');
+    const purposeConditions = allConditions.filter(c => 
+      c.field === 'purpose' || c.field === 'service_purpose'
+    );
     const allowed: string[] = [];
     const blocked: string[] = [];
     
@@ -295,15 +362,38 @@ export function frontendToBackendPolicy(frontend: FrontendPolicy): BackendPolicy
     rules.fallbackAction = frontend.fallbackAction as 'approve' | 'deny' | 'flag_review' | 'require_approval';
   }
 
+  // Map frontend transactionType to backend transactionTypes array
+  let transactionTypes: ('agent-to-merchant' | 'agent-to-agent' | 'all')[];
+  if (frontend.transactionType === 'all') {
+    transactionTypes = ['all'];
+  } else if (frontend.transactionType === 'agent-to-merchant') {
+    transactionTypes = ['agent-to-merchant'];
+  } else if (frontend.transactionType === 'agent-to-agent') {
+    transactionTypes = ['agent-to-agent'];
+  } else {
+    // Default to agent-to-merchant for backward compatibility
+    transactionTypes = ['agent-to-merchant'];
+  }
+
   return {
     id: frontend.id,
     name: frontend.name,
     type: policyType,
     enabled: frontend.isActive,
     priority: 100, // Default priority
+    transactionTypes, // Add transaction types
     conditions,
     rules,
   };
+}
+
+// Helper to generate GUID
+function generateGuid(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
 }
 
 /**
@@ -318,14 +408,14 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     // For budget, we show it as a limit that shouldn't be exceeded
     // The frontend will interpret this as "if amount would exceed budget"
     conditions.push({
-      id: `cond-${timestamp}-1`,
+      id: generateGuid(),
       field: 'amount',
       operator: 'greater_than_or_equal',
       value: String(backend.rules.maxAmount),
     });
   } else if (backend.type === 'transaction' && backend.rules.maxTransactionAmount) {
     conditions.push({
-      id: `cond-${timestamp}-1`,
+      id: generateGuid(),
       field: 'amount',
       operator: 'less_than_or_equal',
       value: String(backend.rules.maxTransactionAmount),
@@ -335,7 +425,7 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
       // For allowed merchants, use in_list if multiple, equals if single
       if (backend.rules.allowedMerchants.length === 1) {
         conditions.push({
-          id: `cond-${timestamp}-1`,
+          id: generateGuid(),
           field: 'merchant_name',
           operator: 'equals',
           value: backend.rules.allowedMerchants[0],
@@ -343,7 +433,7 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
       } else {
         backend.rules.allowedMerchants.forEach((merchant, idx) => {
           conditions.push({
-            id: `cond-${timestamp}-${idx + 1}`,
+            id: generateGuid(),
             field: 'merchant_name',
             operator: 'in_list',
             value: merchant,
@@ -354,7 +444,7 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     if (backend.rules.blockedMerchants && backend.rules.blockedMerchants.length > 0) {
       backend.rules.blockedMerchants.forEach((merchant, idx) => {
         conditions.push({
-          id: `cond-blocked-${timestamp}-${idx + 1}`,
+          id: generateGuid(),
           field: 'merchant_name',
           operator: 'not_equals',
           value: merchant,
@@ -365,7 +455,7 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     if (backend.rules.allowedCategories && backend.rules.allowedCategories.length > 0) {
       if (backend.rules.allowedCategories.length === 1) {
         conditions.push({
-          id: `cond-${timestamp}-1`,
+          id: generateGuid(),
           field: 'merchant_category',
           operator: 'equals',
           value: backend.rules.allowedCategories[0],
@@ -373,7 +463,7 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
       } else {
         backend.rules.allowedCategories.forEach((category, idx) => {
           conditions.push({
-            id: `cond-${timestamp}-${idx + 1}`,
+            id: generateGuid(),
             field: 'merchant_category',
             operator: 'in_list',
             value: category,
@@ -384,7 +474,7 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     if (backend.rules.blockedCategories && backend.rules.blockedCategories.length > 0) {
       backend.rules.blockedCategories.forEach((category, idx) => {
         conditions.push({
-          id: `cond-blocked-${timestamp}-${idx + 1}`,
+          id: generateGuid(),
           field: 'merchant_category',
           operator: 'not_equals',
           value: category,
@@ -396,7 +486,7 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     if (backend.rules.allowedTimeRanges && backend.rules.allowedTimeRanges.length > 0) {
       backend.rules.allowedTimeRanges.forEach((range, idx) => {
         conditions.push({
-          id: `cond-time-${timestamp}-${idx + 1}`,
+          id: generateGuid(),
           field: 'time_of_day',
           operator: 'greater_than_or_equal',
           value: range.start,
@@ -407,7 +497,7 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
       const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
       backend.rules.allowedDaysOfWeek.forEach((day, idx) => {
         conditions.push({
-          id: `cond-day-${timestamp}-${idx + 1}`,
+          id: generateGuid(),
           field: 'day_of_week',
           operator: 'equals',
           value: dayNames[day] || String(day),
@@ -415,13 +505,13 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
       });
     }
   } else if (backend.type === 'agent') {
-    // Agent-based conditions
+    // Agent-based conditions (use new field names)
     if (backend.rules.allowedAgentNames && backend.rules.allowedAgentNames.length > 0) {
       backend.rules.allowedAgentNames.forEach((agent, idx) => {
         conditions.push({
-          id: `cond-agent-${timestamp}-${idx + 1}`,
-          field: 'agent_name',
-          operator: backend.rules.allowedAgentNames.length === 1 ? 'equals' : 'in_list',
+          id: generateGuid(),
+          field: 'buyer_agent_name',
+          operator: backend.rules.allowedAgentNames!.length === 1 ? 'equals' : 'in_list',
           value: agent,
         });
       });
@@ -429,8 +519,8 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     if (backend.rules.blockedAgentNames && backend.rules.blockedAgentNames.length > 0) {
       backend.rules.blockedAgentNames.forEach((agent, idx) => {
         conditions.push({
-          id: `cond-agent-blocked-${timestamp}-${idx + 1}`,
-          field: 'agent_name',
+          id: generateGuid(),
+          field: 'buyer_agent_name',
           operator: 'not_equals',
           value: agent,
         });
@@ -439,9 +529,9 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     if (backend.rules.allowedAgentTypes && backend.rules.allowedAgentTypes.length > 0) {
       backend.rules.allowedAgentTypes.forEach((type, idx) => {
         conditions.push({
-          id: `cond-agent-type-${timestamp}-${idx + 1}`,
-          field: 'agent_type',
-          operator: backend.rules.allowedAgentTypes.length === 1 ? 'equals' : 'in_list',
+          id: generateGuid(),
+          field: 'buyer_agent_type',
+          operator: backend.rules.allowedAgentTypes!.length === 1 ? 'equals' : 'in_list',
           value: type,
         });
       });
@@ -449,10 +539,40 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     if (backend.rules.allowedRecipientAgents && backend.rules.allowedRecipientAgents.length > 0) {
       backend.rules.allowedRecipientAgents.forEach((agent, idx) => {
         conditions.push({
-          id: `cond-recipient-${timestamp}-${idx + 1}`,
-          field: 'recipient_agent',
-          operator: backend.rules.allowedRecipientAgents.length === 1 ? 'equals' : 'in_list',
+          id: generateGuid(),
+          field: 'service_provider',
+          operator: backend.rules.allowedRecipientAgents!.length === 1 ? 'equals' : 'in_list',
           value: agent,
+        });
+      });
+    }
+    if (backend.rules.allowedRecipientAgentTypes && backend.rules.allowedRecipientAgentTypes.length > 0) {
+      backend.rules.allowedRecipientAgentTypes.forEach((type, idx) => {
+        conditions.push({
+          id: generateGuid(),
+          field: 'service_provider_type',
+          operator: backend.rules.allowedRecipientAgentTypes!.length === 1 ? 'equals' : 'in_list',
+          value: type,
+        });
+      });
+    }
+    if (backend.rules.allowedServiceTypes && backend.rules.allowedServiceTypes.length > 0) {
+      backend.rules.allowedServiceTypes.forEach((type, idx) => {
+        conditions.push({
+          id: generateGuid(),
+          field: 'service_type',
+          operator: backend.rules.allowedServiceTypes!.length === 1 ? 'equals' : 'in_list',
+          value: type,
+        });
+      });
+    }
+    if (backend.rules.allowedServiceCategories && backend.rules.allowedServiceCategories.length > 0) {
+      backend.rules.allowedServiceCategories.forEach((category, idx) => {
+        conditions.push({
+          id: generateGuid(),
+          field: 'service_category',
+          operator: backend.rules.allowedServiceCategories!.length === 1 ? 'equals' : 'in_list',
+          value: category,
         });
       });
     }
@@ -461,9 +581,9 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     if (backend.rules.allowedPurposes && backend.rules.allowedPurposes.length > 0) {
       backend.rules.allowedPurposes.forEach((purpose, idx) => {
         conditions.push({
-          id: `cond-purpose-${timestamp}-${idx + 1}`,
+          id: generateGuid(),
           field: 'purpose',
-          operator: backend.rules.allowedPurposes.length === 1 ? 'equals' : 'in_list',
+          operator: backend.rules.allowedPurposes!.length === 1 ? 'equals' : 'in_list',
           value: purpose,
         });
       });
@@ -471,7 +591,7 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     if (backend.rules.blockedPurposes && backend.rules.blockedPurposes.length > 0) {
       backend.rules.blockedPurposes.forEach((purpose, idx) => {
         conditions.push({
-          id: `cond-purpose-blocked-${timestamp}-${idx + 1}`,
+          id: generateGuid(),
           field: 'purpose',
           operator: 'not_equals',
           value: purpose,
@@ -482,7 +602,7 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
     // Composite conditions - convert directly
     backend.rules.compositeConditions.forEach((cond, idx) => {
       conditions.push({
-        id: `cond-composite-${timestamp}-${idx + 1}`,
+        id: generateGuid(),
         field: cond.field,
         operator: cond.operator,
         value: String(cond.value),
@@ -493,17 +613,29 @@ export function backendToFrontendPolicy(backend: BackendPolicy): FrontendPolicy 
   // If no conditions, create a default one
   if (conditions.length === 0) {
     conditions.push({
-      id: `cond-${timestamp}-1`,
+      id: generateGuid(),
       field: 'amount',
       operator: 'greater_than',
       value: '0',
     });
   }
 
+  // Map backend transactionTypes array to frontend single transactionType
+  let transactionType: "agent-to-merchant" | "agent-to-agent" | "all" = 'agent-to-merchant';
+  if (backend.transactionTypes) {
+    if (backend.transactionTypes.includes('all')) {
+      transactionType = 'all';
+    } else if (backend.transactionTypes.includes('agent-to-agent')) {
+      transactionType = 'agent-to-agent';
+    } else if (backend.transactionTypes.includes('agent-to-merchant')) {
+      transactionType = 'agent-to-merchant';
+    }
+  }
+
   return {
     id: backend.id,
     name: backend.name,
-    transactionType: 'agent-to-merchant',
+    transactionType, // Convert from backend array to frontend single value
     llmScope: 'all',
     selectedLLMs: [],
     trigger: 'transaction_occurs',

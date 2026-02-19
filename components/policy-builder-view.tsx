@@ -4,8 +4,9 @@ import { useState, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Card } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -48,16 +49,22 @@ import { toast } from "sonner"
 // Types are imported from policy-mapper
 
 const fieldOptions = [
-  { value: "amount", label: "Amount" },
-  { value: "merchant_category", label: "Merchant Category" },
-  { value: "merchant_name", label: "Merchant Name" },
-  { value: "agent_name", label: "Agent Name" },
-  { value: "agent_type", label: "Agent Type" },
-  { value: "time_of_day", label: "Time of Day" },
-  { value: "day_of_week", label: "Day of Week" },
-  { value: "frequency", label: "Transaction Frequency" },
-  { value: "recipient_agent", label: "Recipient Agent" },
-  { value: "purpose", label: "Transaction Purpose" },
+  // ===== COMMON FIELDS (Both transaction types) =====
+  { value: "amount", label: "Transaction Amount", types: ["all", "agent-to-merchant", "agent-to-agent"] },
+  { value: "time_of_day", label: "Time of Day", types: ["all", "agent-to-merchant", "agent-to-agent"] },
+  { value: "day_of_week", label: "Day of Week", types: ["all", "agent-to-merchant", "agent-to-agent"] },
+  { value: "frequency", label: "Frequency Limit", types: ["all", "agent-to-merchant", "agent-to-agent"] },
+  
+  // ===== AGENT-TO-MERCHANT ONLY (Product purchases) =====
+  { value: "merchant_name", label: "Merchant Name", types: ["agent-to-merchant"] },
+  { value: "merchant_category", label: "Product Category", types: ["agent-to-merchant"] },
+  { value: "purpose", label: "Purchase Purpose", types: ["agent-to-merchant"] },
+  
+  // ===== AGENT-TO-AGENT ONLY (Service purchases) =====
+  { value: "service_type", label: "Service Type", types: ["agent-to-agent"] },
+  { value: "service_category", label: "Service Category", types: ["agent-to-agent"] },
+  { value: "service_provider", label: "Service Provider", types: ["agent-to-agent"] },
+  { value: "service_purpose", label: "Service Purpose", types: ["agent-to-agent"] },
 ]
 
 const operatorOptions = [
@@ -92,7 +99,10 @@ const outcomeOptions = [
 ]
 
 export function PolicyBuilderView() {
-  const [activeTab, setActiveTab] = useState<"build" | "history" | "settings">("build")
+  const [activeTab, setActiveTab] = useState<"build" | "history" | "policies">("build")
+  const [globalPolicies, setGlobalPolicies] = useState<any[]>([])
+  const [isLoadingPolicies, setIsLoadingPolicies] = useState(false)
+  const [togglingPolicyId, setTogglingPolicyId] = useState<string | null>(null)
   const [policy, setPolicy] = useState<FrontendPolicy>({
     id: `policy-${Date.now()}`,
     name: "New Policy",
@@ -354,6 +364,53 @@ export function PolicyBuilderView() {
       toast.error(`Failed to delete policy: ${error.message}`)
     }
   }
+
+  // Load global policies for the Policies tab
+  const loadGlobalPolicies = async () => {
+    setIsLoadingPolicies(true)
+    try {
+      const policies = await apiClient.getPolicies()
+      setGlobalPolicies(policies)
+    } catch (error) {
+      console.error('Failed to load policies:', error)
+      toast.error('Failed to load policies')
+    } finally {
+      setIsLoadingPolicies(false)
+    }
+  }
+
+  // Toggle policy active/inactive
+  const handleTogglePolicy = async (policyId: string, currentEnabled: boolean) => {
+    setTogglingPolicyId(policyId)
+    try {
+      const policyToUpdate = globalPolicies.find(p => p.id === policyId)
+      if (!policyToUpdate) {
+        throw new Error('Policy not found')
+      }
+
+      const updatedPolicy = { ...policyToUpdate, enabled: !currentEnabled }
+      await apiClient.updatePolicy(updatedPolicy)
+      
+      // Update local state
+      setGlobalPolicies(prev => 
+        prev.map(p => p.id === policyId ? { ...p, enabled: !currentEnabled } : p)
+      )
+      
+      toast.success(`Policy ${!currentEnabled ? 'activated' : 'deactivated'}`)
+    } catch (error: any) {
+      console.error('Failed to toggle policy:', error)
+      toast.error(`Failed to toggle policy: ${error.message}`)
+    } finally {
+      setTogglingPolicyId(null)
+    }
+  }
+
+  // Load policies when Policies tab becomes active
+  useEffect(() => {
+    if (activeTab === "policies") {
+      loadGlobalPolicies()
+    }
+  }, [activeTab])
 
   const handleNewPolicy = () => {
     setPolicy({
@@ -686,15 +743,22 @@ export function PolicyBuilderView() {
                                   updateCondition(rule.id, condition.id, { field: value })
                                 }
                               >
-                                <SelectTrigger className="w-[180px]">
+                                <SelectTrigger className="w-[200px]">
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  {fieldOptions.map((opt) => (
-                                    <SelectItem key={opt.value} value={opt.value}>
-                                      {opt.label}
-                                    </SelectItem>
-                                  ))}
+                                  {fieldOptions
+                                    .filter(opt => {
+                                      // If "All Transactions" is selected, show all fields
+                                      if (policy.transactionType === 'all') return true;
+                                      // Otherwise, filter by transaction type
+                                      return opt.types.includes('all') || opt.types.includes(policy.transactionType);
+                                    })
+                                    .map((opt) => (
+                                      <SelectItem key={`${opt.value}-${opt.label}`} value={opt.value}>
+                                        {opt.label}
+                                      </SelectItem>
+                                    ))}
                                 </SelectContent>
                               </Select>
 
@@ -891,7 +955,7 @@ export function PolicyBuilderView() {
             </button>
           </div>
           <div className="flex-1 flex">
-            {(["build", "history", "settings"] as const).map((tab) => (
+            {(["build", "history", "policies"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -902,7 +966,7 @@ export function PolicyBuilderView() {
                     : "text-muted-foreground hover:text-foreground"
                 )}
               >
-                {tab === "build" ? "Build" : tab === "history" ? "History" : "Settings"}
+                {tab === "build" ? "Build" : tab === "history" ? "History" : "Policies"}
               </button>
             ))}
           </div>
@@ -985,10 +1049,27 @@ export function PolicyBuilderView() {
                       className="w-full bg-transparent"
                       onClick={async () => {
                         try {
+                          // Extract a test price from policy rules or use a default
+                          let testPrice = 100;
+                          const amountRule = policy.rules.find(r => 
+                            r.conditions.some(c => c.field === 'amount' || c.field === 'transaction_amount')
+                          );
+                          if (amountRule && amountRule.conditions.length > 0) {
+                            const amountCondition = amountRule.conditions.find(c => 
+                              c.field === 'amount' || c.field === 'transaction_amount'
+                            );
+                            if (amountCondition?.value) {
+                              const parsedPrice = parseFloat(String(amountCondition.value));
+                              if (!isNaN(parsedPrice) && parsedPrice > 0) {
+                                testPrice = parsedPrice;
+                              }
+                            }
+                          }
+                          
                           const testRequest = {
                             user_id: "test-user-123",
                             product_id: "test-product-1",
-                            price: parseFloat(policy.rules[0]?.conditions[0]?.value || "100"),
+                            price: testPrice,
                             merchant: "Test Merchant",
                             category: "Test Category",
                           }
@@ -1056,37 +1137,101 @@ export function PolicyBuilderView() {
             </div>
           )}
 
-          {activeTab === "settings" && (
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm font-medium mb-2 block">Policy name</label>
-                <Input
-                  value={policy.name}
-                  onChange={(e) => setPolicy((prev) => ({ ...prev, name: e.target.value }))}
-                  placeholder="Enter a descriptive name for this policy..."
-                  className="w-full"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Give your policy a clear, descriptive name to easily identify it later.
+          {activeTab === "policies" && (
+            <div className="flex flex-col h-full">
+              <div className="mb-6 flex-shrink-0">
+                <h3 className="text-lg font-semibold text-foreground mb-2">Active Transaction Policies</h3>
+                <p className="text-sm text-muted-foreground">
+                  Global policies that apply to all users and agents. Toggle to activate or deactivate each policy.
                 </p>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Active</span>
-                <button
-                  onClick={() => setPolicy((prev) => ({ ...prev, isActive: !prev.isActive }))}
-                  className={cn(
-                    "relative w-11 h-6 rounded-full transition-colors",
-                    policy.isActive ? "bg-primary" : "bg-muted"
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform",
-                      policy.isActive && "translate-x-5"
-                    )}
-                  />
-                </button>
-              </div>
+
+              {isLoadingPolicies ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : globalPolicies.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <ShieldCheck className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                  <p className="text-sm">No policies configured</p>
+                  <p className="text-xs mt-1">Create a policy in the Build tab to get started</p>
+                </div>
+              ) : (
+                <div className="space-y-3 overflow-y-auto flex-1 pr-2" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+                  {globalPolicies.map((pol) => (
+                    <Card key={pol.id} className="border-border hover:shadow-md transition-shadow">
+                      <CardContent className="p-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-3 mb-2">
+                              <h4 className="font-medium text-sm text-foreground truncate">
+                                {pol.name}
+                              </h4>
+                              <Badge variant="outline" className="text-xs font-normal shrink-0">
+                                {pol.type}
+                              </Badge>
+                            </div>
+                            
+                            <div className="flex items-center gap-3 text-xs text-muted-foreground mb-3">
+                              <span className="flex items-center gap-1">
+                                Priority: <span className="font-medium">{pol.priority}</span>
+                              </span>
+                              <span className="flex items-center gap-1.5">
+                                <div className={`w-2 h-2 rounded-full ${pol.enabled ? 'bg-green-500' : 'bg-gray-400'}`} />
+                                {pol.enabled ? 'Active' : 'Inactive'}
+                              </span>
+                            </div>
+
+                            <div className="space-y-1 text-xs text-muted-foreground">
+                              {pol.rules.maxTransactionAmount && (
+                                <p>• Max amount: ${pol.rules.maxTransactionAmount}</p>
+                              )}
+                              {pol.rules.maxAmount && pol.rules.period && (
+                                <p>• Budget: ${pol.rules.maxAmount} per {pol.rules.period}</p>
+                              )}
+                              {pol.rules.allowedMerchants && pol.rules.allowedMerchants.length > 0 && (
+                                <p>• Allowed merchants: {pol.rules.allowedMerchants.join(', ')}</p>
+                              )}
+                              {pol.rules.blockedMerchants && pol.rules.blockedMerchants.length > 0 && (
+                                <p>• Blocked merchants: {pol.rules.blockedMerchants.join(', ')}</p>
+                              )}
+                              {pol.rules.allowedServiceTypes && pol.rules.allowedServiceTypes.length > 0 && (
+                                <p>• Allowed services: {pol.rules.allowedServiceTypes.join(', ')}</p>
+                              )}
+                              {pol.rules.blockedServiceTypes && pol.rules.blockedServiceTypes.length > 0 && (
+                                <p>• Blocked services: {pol.rules.blockedServiceTypes.join(', ')}</p>
+                              )}
+                              {pol.rules.allowedCategories && pol.rules.allowedCategories.length > 0 && (
+                                <p>• Allowed categories: {pol.rules.allowedCategories.join(', ')}</p>
+                              )}
+                              {pol.rules.blockedCategories && pol.rules.blockedCategories.length > 0 && (
+                                <p>• Blocked categories: {pol.rules.blockedCategories.join(', ')}</p>
+                              )}
+                              {pol.rules.fallbackAction && (
+                                <p className="mt-2 pt-2 border-t border-border/50">
+                                  <span className="font-medium">Action:</span> {pol.rules.fallbackAction.replace('_', ' ')}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <Switch
+                              checked={pol.enabled}
+                              onCheckedChange={() => handleTogglePolicy(pol.id, pol.enabled)}
+                              disabled={togglingPolicyId === pol.id}
+                              className="data-[state=checked]:bg-green-600"
+                            />
+                            {togglingPolicyId === pol.id && (
+                              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                            )}
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

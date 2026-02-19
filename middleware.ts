@@ -20,10 +20,10 @@ export function middleware(request: NextRequest) {
 
   // Allow access to public routes without session
   if (isPublicRoute) {
-    // If user has session and tries to access login page, redirect to home
-    if (hasSession && pathname === '/auth/login') {
-      return NextResponse.redirect(new URL('/', request.url));
-    }
+    // DISABLED: Allow access to login page even with session (for development)
+    // if (hasSession && pathname === '/auth/login') {
+    //   return NextResponse.redirect(new URL('/', request.url));
+    // }
     return NextResponse.next();
   }
 
