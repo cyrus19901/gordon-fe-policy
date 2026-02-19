@@ -48,8 +48,11 @@ import {
   XCircle,
   DollarSign,
   Loader2,
+  Bot,
+  Pencil,
 } from "lucide-react"
 import SpendBreakdownSection from "@/components/spend-breakdown-section"
+import { PolicyCoverageCard } from "@/components/policy-coverage-card"
 import { apiClient } from "@/lib/api-client"
 import { toast } from "sonner"
 
@@ -271,7 +274,7 @@ export function PolicyHomeView({ onNavigate }: PolicyHomeViewProps) {
       : (approval.productName || `Purchase from ${vendor}`);
     
     return {
-      id: approval.id.toString(),
+      id: approval.id, // Already a string (GUID format)
       requester: approval.category || approval.serviceType || "Agent",
       amount: approval.amount,
       vendor,
@@ -359,7 +362,7 @@ export function PolicyHomeView({ onNavigate }: PolicyHomeViewProps) {
                   </div>
                 </div>
                 <Button variant="ghost" size="sm" className="text-sm gap-2 px-0 hover:bg-transparent">
-                  <ExternalLink className="h-4 w-4" />
+                  <Pencil className="h-4 w-4" />
                   Edit policy
                 </Button>
               </div>
@@ -390,7 +393,7 @@ export function PolicyHomeView({ onNavigate }: PolicyHomeViewProps) {
             <CardContent className="p-0">
               <div className="p-4 border-b border-border/50 flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">In policy spend</span>
-                <Badge variant="outline" className="text-xs font-normal text-green-600 border-green-200 bg-green-50">
+                <Badge className="text-xs font-normal text-white bg-green-500 hover:bg-green-600 border-0">
                   {policyData.inPolicySpendChange}
                 </Badge>
               </div>
@@ -408,6 +411,82 @@ export function PolicyHomeView({ onNavigate }: PolicyHomeViewProps) {
               </div>
             </CardContent>
           </Card>
+        </div>
+      </section>
+
+      {/* Policy Coverage */}
+      <section>
+        <div className="grid grid-cols-1 gap-4">
+          <PolicyCoverageCard
+            autoResolvedPercentage={87}
+            trendPercentage="+4.1% this month"
+            metrics={[
+              { label: "Auto-approved", percentage: 62, color: "bg-green-500" },
+              { label: "Approved with justification", percentage: 25, color: "bg-blue-500" },
+              { label: "Escalated to approver", percentage: 10, color: "bg-amber-500" },
+              { label: "Blocked", percentage: 3, color: "bg-red-500" },
+            ]}
+          />
+        </div>
+      </section>
+
+      {/* Saved Policies */}
+      <section>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-foreground">Saved policies</h2>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-sm gap-1.5"
+            onClick={() => onNavigate?.("find-deals")}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New policy
+          </Button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          {[
+            { name: "Procurement Policy", status: "active" as const, lastModified: "2 hours ago", agent: "ChatGPT", description: "Controls agent purchasing from approved vendors with spend thresholds." },
+            { name: "Software Licensing Policy", status: "active" as const, lastModified: "1 day ago", agent: "ChatGPT", description: "Governs SaaS subscriptions, license renewals, and new software purchases." },
+            { name: "Travel Booking Policy", status: "draft" as const, lastModified: "3 days ago", agent: "ChatGPT", description: "Manages business travel bookings with class and rate limits." },
+            { name: "Inter-Agent Transfer Policy", status: "active" as const, lastModified: "5 days ago", agent: "ChatGPT", description: "Controls fund movement between autonomous agents." },
+          ].map((policy, index) => {
+            const statusStyles = {
+              active: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+              draft: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+            }
+            return (
+              <motion.div
+                key={policy.name}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.05 * index }}
+              >
+                <Card
+                  className="bg-card border border-border shadow-sm hover:shadow-md hover:border-border/80 transition-all cursor-pointer group h-full"
+                  onClick={() => onNavigate?.("find-deals")}
+                >
+                  <CardContent className="p-4 flex flex-col h-full">
+                    <div className="flex items-center justify-between mb-2">
+                      <Badge className={`text-[10px] font-medium capitalize ${statusStyles[policy.status]}`}>
+                        {policy.status}
+                      </Badge>
+                      <span className="text-[10px] text-muted-foreground">{policy.lastModified}</span>
+                    </div>
+                    <h3 className="text-sm font-semibold text-foreground mb-1 group-hover:text-primary transition-colors">{policy.name}</h3>
+                    <p className="text-xs text-muted-foreground leading-relaxed flex-1">{policy.description}</p>
+                    <div className="flex items-center justify-between mt-3 pt-3 border-t border-border/50">
+                      <Badge variant="secondary" className="text-[10px] gap-1">
+                        <Bot className="h-2.5 w-2.5" />
+                        {policy.agent}
+                      </Badge>
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )
+          })}
         </div>
       </section>
 
