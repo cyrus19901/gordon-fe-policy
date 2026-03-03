@@ -26,7 +26,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid prompt" }, { status: 400 })
     }
 
-    console.log("[v0] Generating campaign workflow for prompt:", prompt)
 
     // Generate workflow using AI
     const result = await generateObject({
@@ -50,7 +49,6 @@ Generate a campaign workflow that includes:
 Make the workflow realistic, professional, and aligned with the campaign goals described.`,
     })
 
-    console.log("[v0] Generated workflow:", result.object)
 
     // Add IDs to blocks
     const blocksWithIds = result.object.blocks.map((block, index) => ({

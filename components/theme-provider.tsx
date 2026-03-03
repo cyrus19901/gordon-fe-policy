@@ -25,7 +25,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const setTheme = React.useCallback((newTheme: Theme) => {
-    console.log("[v0] Setting theme to:", newTheme)
     setThemeState(newTheme)
     localStorage.setItem("gordon-ai-theme", newTheme)
     document.documentElement.classList.toggle("dark", newTheme === "dark")
@@ -33,7 +32,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   const toggleTheme = React.useCallback(() => {
     const newTheme = theme === "light" ? "dark" : "light"
-    console.log("[v0] Toggling theme from", theme, "to", newTheme)
     setTheme(newTheme)
   }, [theme, setTheme])
 

@@ -4,49 +4,73 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { motion } from 'framer-motion';
-import { ArrowRight, Mail } from 'lucide-react';
+import { ArrowRight, Mail, AlertCircle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import Image from 'next/image';
+
+// Common TLD typos to catch before submission
+const COMMON_TLD_TYPOS: Record<string, string> = {
+  'gmai.com': 'gmail.com',
+  'gmial.com': 'gmail.com',
+  'gmail.co': 'gmail.com',
+  'gmail.cm': 'gmail.com',
+  'gmail.om': 'gmail.com',
+  'gmail.con': 'gmail.com',
+  'yahoo.co': 'yahoo.com',
+  'yahoo.cm': 'yahoo.com',
+  'outlok.com': 'outlook.com',
+  'hotmai.com': 'hotmail.com',
+};
+
+function detectEmailTypo(email: string): string | null {
+  const lower = email.toLowerCase();
+  const domain = lower.split('@')[1];
+  if (!domain) return null;
+  const fix = COMMON_TLD_TYPOS[domain];
+  if (fix) return email.split('@')[0] + '@' + fix;
+  return null;
+}
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [suggestion, setSuggestion] = useState('');
   const router = useRouter();
+
+  const handleEmailChange = (value: string) => {
+    setEmail(value);
+    setError('');
+    setSuggestion(detectEmailTypo(value) ?? '');
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
     setIsLoading(true);
 
     try {
-      // For development: bypass OTP and create session directly
       const response = await fetch('/api/auth/request-otp', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim() }),
       });
 
       const data = await response.json();
 
       if (response.ok && data.success) {
-        // In development mode, if skipOtp is true, redirect directly to home
         if (data.skipOtp) {
-          // Wait a moment for session to be set
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise(resolve => setTimeout(resolve, 300));
           router.push('/');
         } else {
-          // Redirect to verify page
-          router.push(`/auth/verify?email=${encodeURIComponent(email)}`);
+          router.push(`/auth/verify?email=${encodeURIComponent(email.trim())}`);
         }
       } else {
-        alert(data.error || 'Failed to send verification code. Please try again.');
+        setError(data.error || 'Failed to send verification code. Please try again.');
         setIsLoading(false);
       }
-    } catch (error) {
-      console.error('Login error:', error);
-      alert('Network error. Please try again.');
+    } catch {
+      setError('Network error. Please check your connection and try again.');
       setIsLoading(false);
     }
   };
@@ -93,11 +117,32 @@ export default function LoginPage() {
                         type="email"
                         placeholder="Enter your email"
                         value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        className="pl-10 h-11"
+                        onChange={(e) => handleEmailChange(e.target.value)}
+                        className={`pl-10 h-11 ${error ? 'border-destructive focus-visible:ring-destructive' : ''}`}
                         required
                       />
                     </div>
+                    {/* Typo suggestion */}
+                    {suggestion && !error && (
+                      <p className="text-sm text-amber-600 dark:text-amber-400">
+                        Did you mean{' '}
+                        <button
+                          type="button"
+                          className="font-medium underline underline-offset-2"
+                          onClick={() => { setEmail(suggestion); setSuggestion(''); }}
+                        >
+                          {suggestion}
+                        </button>
+                        ?
+                      </p>
+                    )}
+                    {/* Error message */}
+                    {error && (
+                      <div className="flex items-start gap-2 text-sm text-destructive">
+                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                        <span>{error}</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Terms */}

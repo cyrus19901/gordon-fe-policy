@@ -18,7 +18,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ suggestions: [] })
     }
 
-    console.log("[v0] Generating suggestions for:", query)
 
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error("Suggestion request timeout")), 5000)
@@ -52,7 +51,6 @@ Examples:
     const result = await Promise.race([aiPromise, timeoutPromise])
 
     const suggestions = result?.object?.suggestions || []
-    console.log("[v0] Generated suggestions:", suggestions)
 
     return NextResponse.json({ suggestions })
   } catch (error) {

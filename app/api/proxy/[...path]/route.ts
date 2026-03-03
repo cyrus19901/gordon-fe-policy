@@ -80,20 +80,13 @@ async function handleRequest(
       }
     }
     
-    // Debug logging
-    console.log('Proxy request:', {
-      method,
-      path: backendPath,
-      userEmail,
-      hasBody: !!body,
-    });
-
     // Build headers - forward Authorization from client if present
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
+    // Only forward Authorization if it's a real JWT (starts with eyJ), not a dev placeholder
     const authHeader = request.headers.get('authorization');
-    if (authHeader) {
+    if (authHeader && authHeader.replace('Bearer ', '').startsWith('eyJ')) {
       headers['Authorization'] = authHeader;
     }
 
@@ -103,6 +96,16 @@ async function handleRequest(
       headers,
       body,
     });
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      const text = await response.text();
+      console.error(`Proxy: backend returned non-JSON for ${backendPath}:`, text.slice(0, 200));
+      return NextResponse.json(
+        { error: `Backend route not found: ${backendPath}`, status: response.status },
+        { status: response.status === 404 ? 404 : 502 }
+      );
+    }
 
     const data = await response.json();
 

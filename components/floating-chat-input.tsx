@@ -44,7 +44,7 @@ import { FilterIcon } from "./icons/filter-icon"
 import { MicIcon } from "./icons/mic-icon"
 import { SplitViewIcon } from "./icons/split-view-icon"
 import { useDealState, useDealDispatch } from "@/lib/deal-context"
-import type { ChatMessage } from "./bar-chat-view"
+import type { ChatMessage } from "@/lib/deal-context"
 import { DynamicDealMockup } from "./dynamic-deal-mockup"
 import { usePathname } from "next/navigation"
 import { SearchFilterView } from "./search-filter-view"
@@ -132,9 +132,7 @@ const MarketDealView = ({
   }
 
   const handleAddToWatchlist = () => {
-    console.log("[v0] MarketDealView handleAddToWatchlist called")
     if (onBookmarkDeal) {
-      console.log("[v0] Calling onBookmarkDeal from MarketDealView")
       onBookmarkDeal(deal)
       onClose() // Close the market deal view
     } else {
@@ -152,7 +150,7 @@ const MarketDealView = ({
 
   const isAlreadySaved = savedDealsState.savedDeals.some((savedDeal) => savedDeal.name === deal.name)
 
-  const summaryItems = [
+  const summaryItems: Array<{ icon: React.ElementType; label: string; value: any; isLink: boolean; url?: string }> = [
     { icon: Building2, label: "Industry", value: deal.industry, isLink: false },
     { icon: MapPin, label: "Location", value: deal.location, isLink: false },
     { icon: Users, label: "Employees", value: deal.employees, isLink: false },
@@ -373,7 +371,6 @@ const MarketDealView = ({
           {/* Add to Campaign button */}
           <Button
             onClick={() => {
-              console.log("[v0] Add to Campaign button clicked in MarketDealView")
               // Close the modal and check the checkbox
               if (onAddToCampaignFromModal) {
                 onAddToCampaignFromModal(deal)
@@ -397,7 +394,6 @@ const MarketDealView = ({
           ) : (
             <Button
               onClick={() => {
-                console.log("[v0] Add to Watchlist button clicked in MarketDealView")
                 handleAddToWatchlist()
               }}
               className="bg-primary text-primary-foreground hover:bg-primary/90 text-sm"
@@ -869,7 +865,7 @@ export function FloatingChatInput({
   const { state: savedDealsState, dispatch: savedDealsDispatch } = useSavedDeals()
 
   const isChatView = dealState?.activeView === "chat"
-  const { addingWorkflowToSection, emailDraftRequest } = dealState || {}
+  const { addingWorkflowToSection, emailDraftRequest } = (dealState as any) || {}
   const isEmailDraftOpen = !!emailDraftRequest
   const isMarketDealOpen = !!selectedMarketDeal
 
@@ -915,10 +911,10 @@ export function FloatingChatInput({
     if (bulkState.selectedDeals.length === 0) return
 
     if (isWatchlistContext) {
-      bulkDispatch({ type: "REMOVE_FROM_WATCHLIST" })
+      bulkDispatch({ type: "REMOVE_FROM_WATCHLIST" } as any)
       toast.info("Deals removed from watchlist.")
     } else {
-      bulkDispatch({ type: "ADD_TO_WATCHLIST" })
+      bulkDispatch({ type: "ADD_TO_WATCHLIST" } as any)
       toast.success("Deals added to watchlist.")
     }
     bulkDispatch({ type: "CLEAR_SELECTION" })
@@ -948,15 +944,6 @@ export function FloatingChatInput({
     }
   }, [isMarketDealOpen])
 
-  useEffect(() => {
-    console.log("[v0] Bulk state changed:", {
-      selectedDealsCount: bulkState.selectedDeals.length,
-      selectedDeals: bulkState.selectedDeals,
-      isBulkEmailOpen,
-      isBulkLinkedInOpen,
-      isBulkCampaignOpen, // Added for logging
-    })
-  }, [bulkState.selectedDeals, isBulkEmailOpen, isBulkLinkedInOpen, isBulkCampaignOpen])
 
   useEffect(() => {
     const handleShowCampaignDetails = (event: CustomEvent) => {
@@ -1105,7 +1092,7 @@ export function FloatingChatInput({
   }, [])
 
   const inputRef = useRef<HTMLInputElement>(null)
-  const barContentsRef = useRef(null)
+  const barContentsRef = useRef<HTMLDivElement>(null)
   const ignoreOutsideRef = useRef(false)
 
   const pathname = usePathname()
@@ -1134,7 +1121,7 @@ export function FloatingChatInput({
     setIsNavExpanded(false)
     setWorkflowInputValue("")
     inputRef.current?.blur()
-    dispatch?.({ type: "CLEAR_ADD_WORKFLOW_TO_SECTION" })
+    dispatch?.({ type: "CLEAR_ADD_WORKFLOW_TO_SECTION" } as any)
     setTimeout(() => {
       if (!isEmailDraftOpen) {
         // setContentView("workflows") // Removed as it's no longer a state variable
@@ -1143,13 +1130,14 @@ export function FloatingChatInput({
   }, [isEmailDraftOpen, dispatch])
 
   useEffect(() => {
-    if (dealState?.workflowPrompt) {
+    const ds = dealState as any
+    if (ds?.workflowPrompt) {
       openBar()
-      setWorkflowInputValue(dealState.workflowPrompt)
+      setWorkflowInputValue(ds.workflowPrompt)
       requestAnimationFrame(() => inputRef.current?.focus())
-      dispatch?.({ type: "CLEAR_WORKFLOW_PROMPT" })
+      dispatch?.({ type: "CLEAR_WORKFLOW_PROMPT" } as any)
     }
-  }, [dealState?.workflowPrompt, openBar, dispatch])
+  }, [(dealState as any)?.workflowPrompt, openBar, dispatch])
 
   useEffect(() => {
     if (!dealState) {
@@ -1158,9 +1146,7 @@ export function FloatingChatInput({
   }, [triggerNewDeal, dealState])
 
   useEffect(() => {
-    console.log("[v0] triggerSearchFilter changed:", triggerSearchFilter)
     if (triggerSearchFilter) {
-      console.log("[v0] Setting search filter states - isSearchFilterOpen: true, isOpen: true, compactExpanded: true")
       setIsSearchFilterOpen(true)
       setIsOpen(true)
       setCompactExpanded(true)
@@ -1170,7 +1156,6 @@ export function FloatingChatInput({
         setWorkflowInputValue(activeFilters.searchQuery)
       }
       setTimeout(() => {
-        console.log("[v0] Attempting to focus search input after trigger")
         // The search input will be focused by the SearchFilterView's own useEffect
       }, 150)
     }
@@ -1547,18 +1532,7 @@ export function FloatingChatInput({
     }
   }
 
-  // Moved renderHomeContent function here to fix redeclaration error
   const renderHomeContent = () => {
-    console.log("[v0] renderHomeContent - conditions:", {
-      isBulkEmailOpen,
-      isBulkLinkedInOpen,
-      isBulkCampaignOpen, // Added for logging
-      isCampaignDetailsOpen, // Added isCampaignDetailsOpen
-      selectedDealsCount: bulkState.selectedDeals.length,
-      shouldShowBulkActions:
-        bulkState.selectedDeals.length > 0 && !isBulkEmailOpen && !isBulkLinkedInOpen && !isBulkCampaignOpen,
-    })
-
     if (isCampaignDetailsOpen && selectedCampaign) {
       return (
         <>
@@ -1624,7 +1598,6 @@ export function FloatingChatInput({
     }
 
     if (isBulkCampaignOpen) {
-      console.log("[v0] Rendering BulkCampaignComposer with deals:", bulkState.selectedDeals)
       return (
         <AnimatePresence mode="wait">
           <motion.div
@@ -1664,7 +1637,6 @@ export function FloatingChatInput({
           className="w-full h-full"
         >
           <BulkEmailComposer
-            selectedDeals={bulkState.selectedDeals}
             onClose={handleBulkEmailClose}
             onSent={handleBulkEmailSent}
           />
@@ -1688,7 +1660,6 @@ export function FloatingChatInput({
     }
 
     if (bulkState.selectedDeals.length > 0 && !isBulkEmailOpen && !isBulkLinkedInOpen && !isBulkCampaignOpen) {
-      console.log("[v0] Rendering bulk actions toolbar")
       return (
         <motion.div
           key="bulk-actions-toolbar"
@@ -1892,11 +1863,9 @@ export function FloatingChatInput({
     }
 
     if (isSearchFilterOpen) {
-      console.log("[v0] Rendering SearchFilterView - isSearchFilterOpen:", isSearchFilterOpen)
       return (
         <SearchFilterView
           onClose={() => {
-            console.log("[v0] SearchFilterView onClose called")
             setIsSearchFilterOpen(false)
             setIsOpen(false)
             setCompactExpanded(false)
@@ -1904,7 +1873,6 @@ export function FloatingChatInput({
             onSearchFilterClose?.()
           }}
           onApplyFilters={(filters) => {
-            console.log("[v0] SearchFilterView onApplyFilters called with:", filters)
             onApplyFilters?.(filters)
             setIsSearchFilterOpen(false)
             setIsOpen(false)
@@ -2006,14 +1974,6 @@ export function FloatingChatInput({
           : compactExpanded
             ? "chat_view"
             : "closed"
-
-  console.log("[v0] Animation target:", animationTarget, {
-    dealState: !!dealState,
-    bulkSelectedCount: bulkState.selectedDeals.length,
-    isBulkEmailOpen,
-    isBulkLinkedInOpen,
-    isBulkCampaignOpen, // Added for logging
-  })
 
   const shouldUseCenterTransform =
     !isBulkEmailOpen && !isBulkLinkedInOpen && !isBulkCampaignOpen && !isCampaignDetailsOpen

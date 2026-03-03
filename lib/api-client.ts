@@ -189,6 +189,30 @@ export const apiClient = {
     });
   },
 
+  // Policy Simulation (no DB mutation)
+  async simulatePolicy(
+    policy: BackendPolicy,
+    transaction: {
+      price: number;
+      product_id?: string;
+      merchant?: string;
+      category?: string;
+      transaction_type?: 'agent-to-merchant' | 'agent-to-agent';
+      service_type?: string;
+      recipient_agent_id?: string;
+      buyer_agent_id?: string;
+      purpose?: string;
+      time_of_day?: string;
+      day_of_week?: number;
+    },
+    current_spending: number = 0,
+  ): Promise<PolicyCheckResult> {
+    return fetchWithAuth('/api/policy/simulate', {
+      method: 'POST',
+      body: JSON.stringify({ policy, transaction, current_spending }),
+    });
+  },
+
   // Spending
   async getSpending(userId: string): Promise<SpendingSummary> {
     return fetchWithAuth('/api/policy/spending', {

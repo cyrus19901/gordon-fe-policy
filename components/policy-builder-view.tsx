@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -95,63 +96,6 @@ interface SimulationResult {
 }
 
 // Mockup fallback data for when backend is unavailable (from experimentation-branch)
-const MOCKUP_POLICIES: BackendPolicy[] = [
-  {
-    id: "pol-1",
-    name: "Procurement Policy",
-    type: "composite",
-    enabled: true,
-    priority: 1000,
-    transactionTypes: ["agent-to-merchant"],
-    conditions: {},
-    rules: {
-      maxTransactionAmount: 1000,
-      blockedCategories: ["personal items", "gift cards", "cryptocurrency"],
-      fallbackAction: "require_approval"
-    }
-  },
-  {
-    id: "pol-2",
-    name: "Software Licensing Policy",
-    type: "composite",
-    enabled: true,
-    priority: 900,
-    transactionTypes: ["agent-to-merchant"],
-    conditions: {},
-    rules: {
-      maxTransactionAmount: 5000,
-      allowedCategories: ["Software", "SaaS", "Cloud Services"],
-      fallbackAction: "require_approval"
-    }
-  },
-  {
-    id: "pol-3",
-    name: "Travel Booking Policy",
-    type: "composite",
-    enabled: false, // draft in the reference
-    priority: 800,
-    transactionTypes: ["all"],
-    conditions: {},
-    rules: {
-      maxTransactionAmount: 2000,
-      allowedCategories: ["Travel", "Hotels", "Transportation"],
-      fallbackAction: "require_approval"
-    }
-  },
-  {
-    id: "pol-4",
-    name: "Inter-Agent Transfer Policy",
-    type: "composite",
-    enabled: true,
-    priority: 700,
-    transactionTypes: ["agent-to-agent"],
-    conditions: {},
-    rules: {
-      maxTransactionAmount: 10000,
-      fallbackAction: "require_approval"
-    }
-  }
-]
 
 export function PolicyBuilderView() {
   // Policy list state
@@ -161,11 +105,12 @@ export function PolicyBuilderView() {
   const [policiesCache, setPoliciesCache] = useState<Map<string, BackendPolicy>>(new Map())
   const [isLoadingPolicies, setIsLoadingPolicies] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
-  const [usingMockupData, setUsingMockupData] = useState(false)
+
 
   // Editor state
   const [activeTab, setActiveTab] = useState<"define" | "enforcement">("define")
   const [policyName, setPolicyName] = useState("Procurement Policy")
+  const [policyEnabled, setPolicyEnabled] = useState(true)
   const [transactionType, setTransactionType] = useState<"a2m" | "a2a" | "both">("a2m")
   const [llmScope, setLlmScope] = useState<"all" | "specific">("specific")
   const [selectedLLMs, setSelectedLLMs] = useState<string[]>(["chatgpt"])
@@ -256,176 +201,203 @@ export function PolicyBuilderView() {
     try {
       // Parse natural language input to extract transaction details
       const parsed = parseSimulationInput(simulationInput)
-      
-      // Build a test policy from current editor state
-      const testPolicy: BackendPolicy = {
-        id: selectedPolicyId,
-        name: policyName,
-        type: "composite",
-        enabled: true,
-        priority: 10000, // Highest priority for testing
-        transactionTypes: transactionType === "both" ? ["all"] : 
-                         transactionType === "a2a" ? ["agent-to-agent"] : 
-                         ["agent-to-merchant"],
-        conditions: {},
-        rules: {}
-      }
 
-      // Extract rules from hard constraints
-      hardConstraints.forEach(constraint => {
-        const rule = constraint.rule
-        const lower = rule.toLowerCase()
-        
-        const amountMatch = rule.match(/\$?([\d,]+)/);
-        if (amountMatch) {
-          const amount = parseFloat(amountMatch[1].replace(/,/g, ''))
-          
-          // Check if it's a per-transaction limit or a budget limit
-          if (lower.includes('single') || (lower.includes('transaction') && lower.includes('max'))) {
-            testPolicy.rules.maxTransactionAmount = amount
-            testPolicy.type = 'transaction'
-          } else if (lower.includes('budget') || lower.includes('spend') || (lower.includes('limit') && !lower.includes('transaction'))) {
-            testPolicy.rules.maxAmount = amount
-            testPolicy.type = 'budget'
-            if (lower.includes('daily') || lower.includes('day')) {
-              testPolicy.rules.period = 'daily'
-            } else if (lower.includes('weekly') || lower.includes('week')) {
-              testPolicy.rules.period = 'weekly'
-            } else if (lower.includes('monthly') || lower.includes('month')) {
-              testPolicy.rules.period = 'monthly'
-            } else {
-              testPolicy.rules.period = 'monthly'
+      // Use the actual saved policy from cache — it already has all structured rules.
+      // Fall back to a text-parsed version only for unsaved (draft) policies.
+      let testPolicy: BackendPolicy | undefined = policiesCache.get(selectedPolicyId)
+
+      if (!testPolicy) {
+        // Draft / unsaved policy: reconstruct from editor state
+        testPolicy = {
+          id: selectedPolicyId,
+          name: policyName,
+          type: "composite",
+          enabled: true,
+          priority: 10000,
+          transactionTypes: transactionType === "both" ? ["all"] :
+                            transactionType === "a2a" ? ["agent-to-agent"] :
+                            ["agent-to-merchant"],
+          conditions: {},
+          rules: {},
+        }
+
+        const applyRuleText = (rule: string) => {
+          const lower = rule.toLowerCase()
+          const amountMatch = rule.match(/\$?([\d,]+(?:\.\d+)?)/);
+          if (amountMatch) {
+            const amount = parseFloat(amountMatch[1].replace(/,/g, ''))
+            if (lower.includes('single') || (lower.includes('transaction') && lower.includes('max') && !lower.includes('month') && !lower.includes('week') && !lower.includes('day'))) {
+              testPolicy!.rules.maxTransactionAmount = amount
+              if (testPolicy!.type === 'composite') testPolicy!.type = 'transaction'
+            } else if (
+              lower.includes('budget') || lower.includes('spend') || lower.includes('up to') ||
+              (lower.includes('limit') && !lower.includes('transaction'))
+            ) {
+              testPolicy!.rules.maxAmount = amount
+              testPolicy!.type = 'budget'
+              testPolicy!.rules.period = lower.includes('daily') || lower.includes('per day')
+                ? 'daily'
+                : lower.includes('weekly') || lower.includes('per week')
+                ? 'weekly'
+                : 'monthly'
             }
           }
-        }
-
-        if ((lower.includes('approved') || lower.includes('allowed')) && lower.includes('vendor')) {
-          const afterColon = rule.split(':')[1]?.trim()
-          if (afterColon) {
-            testPolicy.rules.allowedMerchants = afterColon.split(',').map(m => m.trim()).filter(Boolean)
+          if ((lower.includes('approved') || lower.includes('allowed')) && lower.includes('vendor')) {
+            const afterColon = rule.split(':')[1]?.trim()
+            if (afterColon) testPolicy!.rules.allowedMerchants = afterColon.split(',').map(m => m.trim()).filter(Boolean)
+          }
+          if (lower.includes('blocked') && lower.includes('categor')) {
+            const afterColon = rule.split(':')[1]?.trim()
+            if (afterColon) testPolicy!.rules.blockedCategories = afterColon.split(',').map(m => m.trim()).filter(Boolean)
           }
         }
 
-        if (lower.includes('blocked') && lower.includes('categor')) {
-          const afterColon = rule.split(':')[1]?.trim()
-          if (afterColon) {
-            testPolicy.rules.blockedCategories = afterColon.split(',').map(m => m.trim()).filter(Boolean)
-          }
-        }
-      })
+        // Try natural-language composite condition parsing first
+        if (policyStatement) {
+          const stmt = policyStatement
+          const stmtLower = stmt.toLowerCase()
 
-      // Set fallback action - what happens when no specific rules are triggered
-      // For transaction limits and budgets, if a transaction doesn't violate any rule, it should be approved
-      testPolicy.rules.fallbackAction = "approve"
+          // Detect blocking intent
+          const isBlocking = /\b(cannot|can't|not allowed|blocked?|denied?|prohibit|restrict|disallow|no purchase|no buying)\b/.test(stmtLower)
 
-      // Debug: Log the test policy being created
-      console.log('🧪 Test Policy Configuration:', {
-        name: testPolicy.name,
-        type: testPolicy.type,
-        rules: testPolicy.rules,
-        hardConstraints: hardConstraints.map(c => c.rule)
-      })
-
-      // Get original state of THIS policy from cache (or fetch if not cached)
-      let originalPolicyData = policiesCache.get(selectedPolicyId)
-      if (!originalPolicyData) {
-        originalPolicyData = await apiClient.getPolicy(selectedPolicyId)
-      }
-      
-      // Get all other policies from cache
-      const otherPolicies = Array.from(policiesCache.values())
-        .filter(p => p.id !== selectedPolicyId)
-      
-      try {
-        // Temporarily disable all other policies using cached data
-        await Promise.all(
-          otherPolicies.map(policy => 
-            apiClient.updatePolicy({ ...policy, enabled: false })
+          // Extract product/item name
+          const productMatch = stmt.match(
+            /\b(?:purchase|buy|order|spend on)\s+(?:a\s+|an\s+)?([a-z][a-z\s]*?)(?:\s+(?:for|from|at|over|more|above|greater|exceeding|\$)|$)/i
           )
-        )
+          const productName = productMatch?.[1]?.trim().toLowerCase()
 
-        // Update THIS policy with test configuration
-        await apiClient.updatePolicy(testPolicy)
-        
-        // Small delay to ensure database is updated
-        await new Promise(resolve => setTimeout(resolve, 100))
-        
-        // Call backend policy check API - now only THIS policy is enabled
-        const result = await apiClient.checkPolicy({
-          user_id: "user-test-123",
-          product_id: parsed.productId,
+          // Extract price threshold with direction
+          const overMatch = stmt.match(/(?:over|more than|above|exceeds?|greater than)\s+\$?([\d,]+)/i)
+          const underMatch = stmt.match(/(?:under|less than|below|within)\s+\$?([\d,]+)/i)
+          const priceLimit = overMatch
+            ? parseFloat(overMatch[1].replace(/,/g, ''))
+            : underMatch
+            ? parseFloat(underMatch[1].replace(/,/g, ''))
+            : null
+
+          // Extract merchant
+          const merchantMatch = stmt.match(/\b(?:from|at|via)\s+([A-Z][a-zA-Z\s]+?)(?:\s|$)/i)
+          const merchantName = merchantMatch?.[1]?.trim()
+
+          // Extract category
+          const categoryMatch = stmt.match(/\b(?:categor(?:y|ies)|type)\s*:?\s*([a-z][a-z\s]+?)(?:\s|$)/i)
+          const categoryName = categoryMatch?.[1]?.trim()
+
+          if (isBlocking && (productName || priceLimit !== null || merchantName || categoryName)) {
+            testPolicy.type = 'composite'
+            const conditions: Array<{ field: string; operator: string; value: string | number }> = []
+
+            if (productName) {
+              conditions.push({ field: 'product_id', operator: 'contains', value: productName })
+            }
+            if (priceLimit !== null) {
+              conditions.push({
+                field: 'amount',
+                operator: overMatch ? 'greater_than' : 'less_than',
+                value: priceLimit,
+              })
+            }
+            if (merchantName) {
+              conditions.push({ field: 'merchant_name', operator: 'contains', value: merchantName.toLowerCase() })
+            }
+            if (categoryName) {
+              conditions.push({ field: 'merchant_category', operator: 'equals', value: categoryName.toLowerCase() })
+            }
+
+            if (conditions.length > 0) {
+              testPolicy.rules.compositeConditions = conditions
+              testPolicy.rules.fallbackAction = 'deny'
+            }
+          } else {
+            // Fall back to simple amount/budget parsing
+            applyRuleText(stmt)
+          }
+        }
+
+        hardConstraints.forEach(constraint => applyRuleText(constraint.rule))
+
+        // Only set approve fallback if no blocking rule was set
+        if (!testPolicy.rules.fallbackAction) {
+          testPolicy.rules.fallbackAction = "approve"
+        }
+      }
+
+
+      // Call the dedicated simulate endpoint - no DB mutations required
+      const txType: 'agent-to-merchant' | 'agent-to-agent' =
+        transactionType === "a2a" ? "agent-to-agent" : "agent-to-merchant"
+
+      const result = await apiClient.simulatePolicy(
+        testPolicy,
+        {
           price: parsed.price,
+          product_id: parsed.productId,
           merchant: parsed.merchant,
           category: parsed.category,
-          transaction_type: transactionType === "both" ? "agent-to-merchant" : 
-                           transactionType === "a2a" ? "agent-to-agent" : 
-                           "agent-to-merchant",
-        })
+          transaction_type: txType,
+        },
+        0, // current_spending starts at 0 for simulation
+      )
 
-        // The backend evaluates all enabled policies - find THIS policy's result
-        const currentPolicyResult = result.matchedPolicies.find(p => p.id === selectedPolicyId)
+      // simulatePolicy returns exactly one entry in matchedPolicies
+      const policyResult = result.matchedPolicies?.[0]
 
-        // Build simulation result
-        if (!currentPolicyResult) {
-          const simulation: SimulationResult = {
-            decision: "Policy conditions not triggered",
-            decisionColor: "text-muted-foreground",
-            reason: "This policy's conditions were not met by this transaction. The transaction may fall outside the scope of this policy's rules.",
-            evidenceAttached: [
-              `Product: ${parsed.productName || parsed.productId}`,
-              `Amount: $${parsed.price}`,
-              `Merchant: ${parsed.merchant || "Not specified"}`,
-              `Category: ${parsed.category || "Not specified"}`,
-            ],
-            rulesTriggered: [],
-            riskScore: 0.5,
-            confidence: 0.85,
-          }
-          setSimulationResult(simulation)
-          toast.info("Policy conditions not triggered")
-          return
-        }
+      const isOutOfScope =
+        !policyResult ||
+        policyResult.reason === 'Transaction type not in scope'
 
-        // Map backend result to frontend display
+      if (isOutOfScope) {
         const simulation: SimulationResult = {
-          decision: currentPolicyResult.passed ? "Approved by this policy" : 
-                    currentPolicyResult.reason?.toLowerCase().includes("approval") ? 
-                    "Requires approval" : "Blocked by this policy",
-          decisionColor: currentPolicyResult.passed ? "text-green-600" : 
-                         currentPolicyResult.reason?.toLowerCase().includes("approval") ? 
-                         "text-amber-600" : "text-red-600",
-          reason: currentPolicyResult.reason || 
-                  (currentPolicyResult.passed ? 
-                    "Transaction meets all policy requirements" : 
-                    "Transaction violates policy constraints"),
+          decision: "Policy not in scope",
+          decisionColor: "text-muted-foreground",
+          reason: `This policy applies to ${testPolicy.transactionTypes?.join(', ') || 'all'} transactions. The simulated transaction type (${txType}) is outside its scope.`,
           evidenceAttached: [
             `Product: ${parsed.productName || parsed.productId}`,
             `Amount: $${parsed.price}`,
             `Merchant: ${parsed.merchant || "Not specified"}`,
             `Category: ${parsed.category || "Not specified"}`,
-            `Policy: ${policyName}`,
           ],
-          rulesTriggered: [currentPolicyResult.id],
-          riskScore: currentPolicyResult.passed ? 0.1 : 0.7,
-          confidence: 0.92,
+          rulesTriggered: [],
+          riskScore: 0.1,
+          confidence: 0.95,
         }
-
         setSimulationResult(simulation)
-        toast.success("Simulation completed")
-        
-      } finally {
-        // Restore THIS policy to its original state
-        if (originalPolicyData) {
-          await apiClient.updatePolicy(originalPolicyData)
-        }
-        
-        // Re-enable all other policies (restore to their original enabled state)
-        await Promise.all(
-          otherPolicies.map(policy => 
-            apiClient.updatePolicy({ ...policy, enabled: policy.enabled })
-          )
-        )
+        toast.info("Policy not in scope for this transaction type")
+        return
       }
+
+      const requiresApproval = result.requiresApproval ||
+        policyResult.reason?.toLowerCase().includes("approval")
+
+      const simulation: SimulationResult = {
+        decision: result.allowed
+          ? "Approved by this policy"
+          : requiresApproval
+          ? "Requires approval"
+          : "Blocked by this policy",
+        decisionColor: result.allowed
+          ? "text-green-600"
+          : requiresApproval
+          ? "text-amber-600"
+          : "text-red-600",
+        reason: policyResult.reason ||
+          (result.allowed
+            ? "Transaction meets all policy requirements"
+            : "Transaction violates policy constraints"),
+        evidenceAttached: [
+          `Product: ${parsed.productName || parsed.productId}`,
+          `Amount: $${parsed.price}`,
+          `Merchant: ${parsed.merchant || "Not specified"}`,
+          `Category: ${parsed.category || "Not specified"}`,
+          `Policy: ${policyName}`,
+        ],
+        rulesTriggered: result.allowed ? [] : [policyResult.id ?? policyName],
+        riskScore: result.allowed ? 0.1 : requiresApproval ? 0.5 : 0.8,
+        confidence: 0.95,
+      }
+
+      setSimulationResult(simulation)
+      toast.success("Simulation completed")
     } catch (error: any) {
       console.error('Simulation failed:', error)
       toast.error(`Simulation failed: ${error.message}`)
@@ -488,8 +460,9 @@ export function PolicyBuilderView() {
     else if (lower.includes('furniture') || lower.includes('desk') || lower.includes('chair')) category = 'Furniture'
     else if (lower.includes('food') || lower.includes('meal') || lower.includes('lunch')) category = 'Food'
 
+    const cleanProductName = productName.trim().toLowerCase()
     return {
-      productId: `prod-${Date.now()}`,
+      productId: cleanProductName || 'unknown-product',
       productName: productName.trim(),
       price,
       merchant,
@@ -506,64 +479,19 @@ export function PolicyBuilderView() {
     setIsLoadingPolicies(true)
     try {
       const backendPolicies = await apiClient.getPolicies()
-      
-      // If backend returns no policies or fails, use mockup data
-      if (!backendPolicies || backendPolicies.length === 0) {
-        console.log('No policies from backend, using mockup data')
-        const mapped = MOCKUP_POLICIES.map(backendPolicyToTemplate)
-        setPolicies(mapped)
-        
-        // Cache mockup policies
-        const cache = new Map<string, BackendPolicy>()
-        MOCKUP_POLICIES.forEach(policy => {
-          cache.set(policy.id, policy)
-        })
-        setPoliciesCache(cache)
-        
-        // Select first policy by default
-        if (mapped.length > 0 && !selectedPolicyId) {
-          selectPolicy(mapped[0])
-        }
-        
-        toast.info('Using demo policies - backend unavailable', { duration: 3000 })
-      } else {
-        // Use backend policies
-        const mapped = backendPolicies.map(backendPolicyToTemplate)
-        setPolicies(mapped)
-        
-        // Cache full policy data for later use (like simulation) to avoid fetching again
-        const cache = new Map<string, BackendPolicy>()
-        backendPolicies.forEach(policy => {
-          cache.set(policy.id, policy)
-        })
-        setPoliciesCache(cache)
-        
-        // Select first policy by default if available
-        if (mapped.length > 0 && !selectedPolicyId) {
-          selectPolicy(mapped[0])
-        }
-      }
-    } catch (error: any) {
-      console.error('Failed to load policies from backend, using mockup data:', error)
-      
-      // Use mockup data as fallback on error
-      const mapped = MOCKUP_POLICIES.map(backendPolicyToTemplate)
+      const mapped = backendPolicies.map(backendPolicyToTemplate)
       setPolicies(mapped)
-      
-      // Cache mockup policies
+
       const cache = new Map<string, BackendPolicy>()
-      MOCKUP_POLICIES.forEach(policy => {
-        cache.set(policy.id, policy)
-      })
+      backendPolicies.forEach(policy => cache.set(policy.id, policy))
       setPoliciesCache(cache)
-      setUsingMockupData(true)
-      
-      // Select first policy by default
+
       if (mapped.length > 0 && !selectedPolicyId) {
         selectPolicy(mapped[0])
       }
-      
-      toast.warning(`Backend unavailable - Using demo policies`, { duration: 5000 })
+    } catch (error: any) {
+      console.error('Failed to load policies:', error)
+      toast.error('Failed to load policies. Please check your connection.')
     } finally {
       setIsLoadingPolicies(false)
     }
@@ -581,19 +509,28 @@ export function PolicyBuilderView() {
       }
     }
 
-    // Generate description from rules
-    let description = ""
-    if (policy.rules.maxAmount) {
-      description += `Max ${policy.rules.period || 'monthly'} spend: $${policy.rules.maxAmount}. `
-    }
-    if (policy.rules.maxTransactionAmount) {
-      description += `Max transaction: $${policy.rules.maxTransactionAmount}. `
-    }
-    if (policy.rules.allowedMerchants && policy.rules.allowedMerchants.length > 0) {
-      description += `Allowed merchants: ${policy.rules.allowedMerchants.join(', ')}. `
-    }
-    if (policy.rules.blockedMerchants && policy.rules.blockedMerchants.length > 0) {
-      description += `Blocked merchants: ${policy.rules.blockedMerchants.join(', ')}. `
+    // Use saved policy statement if available, otherwise reconstruct from rules
+    const savedStatement = (policy.conditions as any)?.policyStatement
+    let description = savedStatement || ""
+
+    if (!description) {
+      if (policy.rules.maxAmount) {
+        description += `Max ${policy.rules.period || 'monthly'} spend: $${policy.rules.maxAmount}. `
+      }
+      if (policy.rules.maxTransactionAmount) {
+        description += `Max transaction: $${policy.rules.maxTransactionAmount}. `
+      }
+      if (policy.rules.allowedMerchants && policy.rules.allowedMerchants.length > 0) {
+        description += `Allowed merchants: ${policy.rules.allowedMerchants.join(', ')}. `
+      }
+      if (policy.rules.blockedMerchants && policy.rules.blockedMerchants.length > 0) {
+        description += `Blocked merchants: ${policy.rules.blockedMerchants.join(', ')}. `
+      }
+      if (policy.rules.compositeConditions && policy.rules.compositeConditions.length > 0) {
+        description = policy.rules.compositeConditions
+          .map((c: any) => `${c.field} ${c.operator.replace(/_/g, ' ')} ${c.value}`)
+          .join(', ')
+      }
     }
 
     return {
@@ -615,6 +552,7 @@ export function PolicyBuilderView() {
     
     // Load full policy details from backend
     apiClient.getPolicy(template.id).then(policy => {
+      setPolicyEnabled(policy.enabled)
       // Map backend rules to our natural language format
       const hardRules: HardConstraint[] = []
       const softRules: SoftConstraint[] = []
@@ -653,15 +591,21 @@ export function PolicyBuilderView() {
       if (hardRules.length > 0) setHardConstraints(hardRules)
       if (softRules.length > 0) setSoftConstraints(softRules)
 
-      // Build policy statement from rules
-      let statement = ""
-      if (policy.rules.maxAmount) {
-        statement += `Agents can spend up to $${policy.rules.maxAmount} per ${policy.rules.period || 'month'}.\n`
+      // Restore the original natural language statement if it was saved
+      const savedStatement = (policy.conditions as any)?.policyStatement
+      if (savedStatement) {
+        setPolicyStatement(savedStatement)
+      } else {
+        // Fallback: reconstruct from rules for older policies
+        let statement = ""
+        if (policy.rules.maxAmount) {
+          statement += `Agents can spend up to $${policy.rules.maxAmount} per ${policy.rules.period || 'month'}.\n`
+        }
+        if (policy.rules.maxTransactionAmount) {
+          statement += `Purchases over $${policy.rules.maxTransactionAmount} need approval.\n`
+        }
+        if (statement) setPolicyStatement(statement)
       }
-      if (policy.rules.maxTransactionAmount) {
-        statement += `Purchases over $${policy.rules.maxTransactionAmount} need approval.\n`
-      }
-      if (statement) setPolicyStatement(statement)
     }).catch(error => {
       console.error('Failed to load policy details:', error)
       toast.error('Failed to load policy details')
@@ -686,12 +630,6 @@ export function PolicyBuilderView() {
   }
 
   const createNewPolicy = async () => {
-    // Prevent creating when using mockup data
-    if (usingMockupData) {
-      toast.warning("Cannot create new policies - using demo policies. Connect to backend to enable creating.")
-      return
-    }
-
     try {
       // Create a minimal policy in the backend
       const newBackendPolicy: BackendPolicy = {
@@ -729,12 +667,6 @@ export function PolicyBuilderView() {
       return
     }
 
-    // Prevent saving when using mockup data
-    if (usingMockupData) {
-      if (!silent) toast.warning("Cannot save - using demo policies. Connect to backend to enable saving.")
-      return
-    }
-
     setIsSaving(true)
     try {
       // Build backend policy from current editor state
@@ -742,21 +674,72 @@ export function PolicyBuilderView() {
         id: selectedPolicyId,
         name: policyName,
         type: "composite",
-        enabled: true,
+        enabled: policyEnabled,
         priority: 100,
         transactionTypes: transactionType === "both" ? ["all"] : 
                          transactionType === "a2a" ? ["agent-to-agent"] : 
                          ["agent-to-merchant"],
-        conditions: {},
+        conditions: {
+          // Persist the original natural language statement so it survives round-trips
+          policyStatement: policyStatement || undefined,
+        },
         rules: {}
       }
 
-      // Extract rules from hard constraints
+      // --- Parse natural language policy statement into composite conditions ---
+      if (policyStatement) {
+        const stmt = policyStatement
+        const stmtLower = stmt.toLowerCase()
+        const isBlocking = /\b(cannot|can't|not allowed|blocked?|denied?|prohibit|restrict|disallow|no purchase|no buying)\b/.test(stmtLower)
+
+        const productMatch = stmt.match(
+          /\b(?:purchase|buy|order|spend on)\s+(?:a\s+|an\s+)?([a-z][a-z\s]*?)(?:\s+(?:for|from|at|over|more|above|greater|exceeding|\$)|$)/i
+        )
+        const productName = productMatch?.[1]?.trim().toLowerCase()
+
+        const overMatch = stmt.match(/(?:over|more than|above|exceeds?|greater than)\s+\$?([\d,]+)/i)
+        const underMatch = stmt.match(/(?:under|less than|below|within)\s+\$?([\d,]+)/i)
+        const priceLimit = overMatch
+          ? parseFloat(overMatch[1].replace(/,/g, ''))
+          : underMatch
+          ? parseFloat(underMatch[1].replace(/,/g, ''))
+          : null
+
+        const merchantMatch = stmt.match(/\b(?:from|at|via)\s+([A-Z][a-zA-Z\s]+?)(?:\s|$)/i)
+        const merchantName = merchantMatch?.[1]?.trim()
+
+        if (isBlocking && (productName || priceLimit !== null || merchantName)) {
+          const conditions: Array<{ field: string; operator: string; value: string | number }> = []
+          if (productName) conditions.push({ field: 'product_id', operator: 'contains', value: productName })
+          if (priceLimit !== null) conditions.push({ field: 'amount', operator: overMatch ? 'greater_than' : 'less_than', value: priceLimit })
+          if (merchantName) conditions.push({ field: 'merchant_name', operator: 'contains', value: merchantName.toLowerCase() })
+
+          if (conditions.length > 0) {
+            backendPolicy.type = 'composite'
+            backendPolicy.rules.compositeConditions = conditions
+            backendPolicy.rules.fallbackAction = 'deny'
+          }
+        } else if (!isBlocking) {
+          // Non-blocking statement: try to extract budget/spend limits
+          const stmtAmountMatch = stmt.match(/\$?([\d,]+(?:\.\d+)?)/)
+          if (stmtAmountMatch) {
+            const amount = parseFloat(stmtAmountMatch[1].replace(/,/g, ''))
+            if (stmtLower.includes('budget') || stmtLower.includes('spend') || stmtLower.includes('up to')) {
+              backendPolicy.rules.maxAmount = amount
+              backendPolicy.type = 'budget'
+              backendPolicy.rules.period = stmtLower.includes('daily') ? 'daily'
+                : stmtLower.includes('weekly') ? 'weekly'
+                : 'monthly'
+            }
+          }
+        }
+      }
+
+      // --- Extract rules from hard constraints (always applied, may override statement) ---
       hardConstraints.forEach(constraint => {
         const rule = constraint.rule
         const lower = rule.toLowerCase()
         
-        // Extract amounts
         const amountMatch = rule.match(/\$?([\d,]+)/);
         if (amountMatch) {
           const amount = parseFloat(amountMatch[1].replace(/,/g, ''))
@@ -764,7 +747,6 @@ export function PolicyBuilderView() {
             backendPolicy.rules.maxTransactionAmount = amount
           } else if (lower.includes('max') && !lower.includes('single')) {
             backendPolicy.rules.maxAmount = amount
-            // Try to detect period
             if (lower.includes('daily') || lower.includes('day')) {
               backendPolicy.rules.period = 'daily'
             } else if (lower.includes('weekly') || lower.includes('week')) {
@@ -775,39 +757,33 @@ export function PolicyBuilderView() {
           }
         }
 
-        // Extract merchants (after colons or specific patterns)
         if ((lower.includes('approved') || lower.includes('allowed')) && lower.includes('vendor')) {
           const afterColon = rule.split(':')[1]?.trim()
           if (afterColon) {
             const merchants = afterColon.split(',').map(m => m.trim()).filter(Boolean)
-            if (merchants.length > 0) {
-              backendPolicy.rules.allowedMerchants = merchants
-            }
+            if (merchants.length > 0) backendPolicy.rules.allowedMerchants = merchants
           }
         } else if (lower.includes('blocked') && (lower.includes('vendor') || lower.includes('merchant'))) {
           const afterColon = rule.split(':')[1]?.trim()
           if (afterColon) {
             const merchants = afterColon.split(',').map(m => m.trim()).filter(Boolean)
-            if (merchants.length > 0) {
-              backendPolicy.rules.blockedMerchants = merchants
-            }
+            if (merchants.length > 0) backendPolicy.rules.blockedMerchants = merchants
           }
         }
 
-        // Extract categories
         if (lower.includes('blocked') && lower.includes('categor')) {
           const afterColon = rule.split(':')[1]?.trim()
           if (afterColon) {
             const categories = afterColon.split(',').map(m => m.trim()).filter(Boolean)
-            if (categories.length > 0) {
-              backendPolicy.rules.blockedCategories = categories
-            }
+            if (categories.length > 0) backendPolicy.rules.blockedCategories = categories
           }
         }
       })
 
-      // Set fallback action - approve if no explicit blocking rules
-      backendPolicy.rules.fallbackAction = "approve"
+      // Only set approve fallback if nothing else set it
+      if (!backendPolicy.rules.fallbackAction) {
+        backendPolicy.rules.fallbackAction = "approve"
+      }
 
       await apiClient.updatePolicy(backendPolicy)
       if (!silent) toast.success(`Policy "${policyName}" saved successfully`)
@@ -824,12 +800,6 @@ export function PolicyBuilderView() {
 
   const deletePolicy = async () => {
     if (!selectedPolicyId) return
-
-    // Prevent deleting when using mockup data
-    if (usingMockupData) {
-      toast.warning("Cannot delete demo policies. Connect to backend to enable deleting.")
-      return
-    }
 
     if (!confirm(`Are you sure you want to delete "${policyName}"?`)) {
       return
@@ -862,12 +832,6 @@ export function PolicyBuilderView() {
   }
 
   const duplicatePolicy = async (policyId: string) => {
-    // Prevent duplicating when using mockup data
-    if (usingMockupData) {
-      toast.warning("Cannot duplicate demo policies. Connect to backend to enable duplicating.")
-      return
-    }
-
     try {
       // Load the source policy from backend
       const sourcePolicy = await apiClient.getPolicy(policyId)
@@ -1018,6 +982,20 @@ export function PolicyBuilderView() {
           </div>
 
           <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Switch
+                id="policy-enabled"
+                checked={policyEnabled}
+                onCheckedChange={async (checked) => {
+                  setPolicyEnabled(checked)
+                  await savePolicy(true)
+                }}
+              />
+              <Label htmlFor="policy-enabled" className={cn("text-sm font-medium cursor-pointer", policyEnabled ? "text-green-600" : "text-muted-foreground")}>
+                {policyEnabled ? "Active" : "Disabled"}
+              </Label>
+            </div>
+            <div className="w-px h-5 bg-border" />
             <Button 
               onClick={() => savePolicy(false)} 
               disabled={isSaving}

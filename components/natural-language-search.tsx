@@ -216,7 +216,6 @@ const convertFiltersToNaturalLanguage = (filters: any): string => {
 
 const callAIParsingAPI = async (query: string): Promise<any> => {
   try {
-    console.log("[v0] Making API call to parse natural language")
     const response = await fetch("/api/parse-natural-language", {
       method: "POST",
       headers: {
@@ -225,7 +224,6 @@ const callAIParsingAPI = async (query: string): Promise<any> => {
       body: JSON.stringify({ query }),
     })
 
-    console.log("[v0] API response status:", response.status)
 
     if (!response.ok) {
       const errorData = await response.json()
@@ -234,7 +232,6 @@ const callAIParsingAPI = async (query: string): Promise<any> => {
     }
 
     const data = await response.json()
-    console.log("[v0] API response data:", data)
     return data.filters || {}
   } catch (error) {
     console.error("[v0] AI parsing API error:", error)
@@ -271,7 +268,6 @@ export function NaturalLanguageSearch({
     )
 
     if (hasMalformedItems) {
-      console.log("[v0] Clearing malformed search history")
       localStorage.removeItem("searchHistory")
     }
   }, [])
@@ -289,7 +285,6 @@ export function NaturalLanguageSearch({
       filters: extractedFilters || {}, // Store the actual extracted filters, not activeFilters
     }
 
-    console.log("[v0] Saving search to history with structure:", newSearch)
 
     // Remove duplicate queries and keep only the latest 20
     const filteredHistory = searchHistory.filter((item: any) => item.query !== query.trim())
@@ -324,7 +319,6 @@ export function NaturalLanguageSearch({
           (value.includes("companies") && value.includes("with"))
 
         if (shouldUpdate) {
-          console.log("[v0] Syncing filters to natural language:", naturalLanguageFromFilters)
           setIsProgrammaticUpdate(true)
           onChange(naturalLanguageFromFilters)
           setLastSyncedFilters(filtersString)
@@ -336,7 +330,6 @@ export function NaturalLanguageSearch({
       // Don't clear if user is actively typing (check if input has focus)
       const isInputFocused = textareaRef.current === document.activeElement
       if (!isInputFocused) {
-        console.log("[v0] Clearing natural language input as filters were cleared")
         setIsProgrammaticUpdate(true)
         onChange("")
         setLastSyncedFilters("")
@@ -354,7 +347,6 @@ export function NaturalLanguageSearch({
 
     setIsLoadingSuggestions(true)
     try {
-      console.log("[v0] Fetching AI suggestions for:", query)
       const response = await fetch("/api/generate-suggestions", {
         method: "POST",
         headers: {
@@ -365,7 +357,6 @@ export function NaturalLanguageSearch({
 
       if (response.ok) {
         const data = await response.json()
-        console.log("[v0] Received AI suggestions:", data.suggestions)
         setAiSuggestions(data.suggestions || [])
       } else {
         console.error("[v0] Failed to fetch suggestions")
@@ -429,16 +420,12 @@ export function NaturalLanguageSearch({
 
     setIsProcessing(true)
     try {
-      console.log("[v0] Starting AI processing for query:", query)
 
       let extractedFilters = {}
       try {
         extractedFilters = await callAIParsingAPI(query)
-        console.log("[v0] AI-extracted filters:", extractedFilters)
       } catch (aiError) {
-        console.log("[v0] AI parsing failed, using local parsing:", aiError)
         extractedFilters = parseNaturalLanguageToFiltersLocal(query)
-        console.log("[v0] Local-extracted filters:", extractedFilters)
       }
 
       onFiltersExtracted(extractedFilters)
@@ -446,7 +433,6 @@ export function NaturalLanguageSearch({
     } catch (error) {
       console.error("[v0] Error processing natural language:", error)
       const fallbackFilters = parseNaturalLanguageToFiltersLocal(query)
-      console.log("[v0] Using fallback filters:", fallbackFilters)
       onFiltersExtracted(fallbackFilters)
       saveSearchToHistory(query, fallbackFilters)
     } finally {
