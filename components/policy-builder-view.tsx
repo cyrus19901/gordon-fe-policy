@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -95,63 +96,6 @@ interface SimulationResult {
 }
 
 // Mockup fallback data for when backend is unavailable (from experimentation-branch)
-const MOCKUP_POLICIES: BackendPolicy[] = [
-  {
-    id: "pol-1",
-    name: "Procurement Policy",
-    type: "composite",
-    enabled: true,
-    priority: 1000,
-    transactionTypes: ["agent-to-merchant"],
-    conditions: {},
-    rules: {
-      maxTransactionAmount: 1000,
-      blockedCategories: ["personal items", "gift cards", "cryptocurrency"],
-      fallbackAction: "require_approval"
-    }
-  },
-  {
-    id: "pol-2",
-    name: "Software Licensing Policy",
-    type: "composite",
-    enabled: true,
-    priority: 900,
-    transactionTypes: ["agent-to-merchant"],
-    conditions: {},
-    rules: {
-      maxTransactionAmount: 5000,
-      allowedCategories: ["Software", "SaaS", "Cloud Services"],
-      fallbackAction: "require_approval"
-    }
-  },
-  {
-    id: "pol-3",
-    name: "Travel Booking Policy",
-    type: "composite",
-    enabled: false, // draft in the reference
-    priority: 800,
-    transactionTypes: ["all"],
-    conditions: {},
-    rules: {
-      maxTransactionAmount: 2000,
-      allowedCategories: ["Travel", "Hotels", "Transportation"],
-      fallbackAction: "require_approval"
-    }
-  },
-  {
-    id: "pol-4",
-    name: "Inter-Agent Transfer Policy",
-    type: "composite",
-    enabled: true,
-    priority: 700,
-    transactionTypes: ["agent-to-agent"],
-    conditions: {},
-    rules: {
-      maxTransactionAmount: 10000,
-      fallbackAction: "require_approval"
-    }
-  }
-]
 
 export function PolicyBuilderView() {
   // Policy list state
@@ -161,11 +105,12 @@ export function PolicyBuilderView() {
   const [policiesCache, setPoliciesCache] = useState<Map<string, BackendPolicy>>(new Map())
   const [isLoadingPolicies, setIsLoadingPolicies] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
-  const [usingMockupData, setUsingMockupData] = useState(false)
+
 
   // Editor state
   const [activeTab, setActiveTab] = useState<"define" | "enforcement">("define")
   const [policyName, setPolicyName] = useState("Procurement Policy")
+  const [policyEnabled, setPolicyEnabled] = useState(true)
   const [transactionType, setTransactionType] = useState<"a2m" | "a2a" | "both">("a2m")
   const [llmScope, setLlmScope] = useState<"all" | "specific">("specific")
   const [selectedLLMs, setSelectedLLMs] = useState<string[]>(["chatgpt"])
@@ -377,12 +322,6 @@ export function PolicyBuilderView() {
         }
       }
 
-      console.log('🧪 Simulating policy:', {
-        id: testPolicy.id,
-        name: testPolicy.name,
-        type: testPolicy.type,
-        rules: testPolicy.rules,
-      })
 
       // Call the dedicated simulate endpoint - no DB mutations required
       const txType: 'agent-to-merchant' | 'agent-to-agent' =
@@ -540,64 +479,19 @@ export function PolicyBuilderView() {
     setIsLoadingPolicies(true)
     try {
       const backendPolicies = await apiClient.getPolicies()
-      
-      // If backend returns no policies or fails, use mockup data
-      if (!backendPolicies || backendPolicies.length === 0) {
-        console.log('No policies from backend, using mockup data')
-        const mapped = MOCKUP_POLICIES.map(backendPolicyToTemplate)
-        setPolicies(mapped)
-        
-        // Cache mockup policies
-        const cache = new Map<string, BackendPolicy>()
-        MOCKUP_POLICIES.forEach(policy => {
-          cache.set(policy.id, policy)
-        })
-        setPoliciesCache(cache)
-        
-        // Select first policy by default
-        if (mapped.length > 0 && !selectedPolicyId) {
-          selectPolicy(mapped[0])
-        }
-        
-        toast.info('Using demo policies - backend unavailable', { duration: 3000 })
-      } else {
-        // Use backend policies
-        const mapped = backendPolicies.map(backendPolicyToTemplate)
-        setPolicies(mapped)
-        
-        // Cache full policy data for later use (like simulation) to avoid fetching again
-        const cache = new Map<string, BackendPolicy>()
-        backendPolicies.forEach(policy => {
-          cache.set(policy.id, policy)
-        })
-        setPoliciesCache(cache)
-        
-        // Select first policy by default if available
-        if (mapped.length > 0 && !selectedPolicyId) {
-          selectPolicy(mapped[0])
-        }
-      }
-    } catch (error: any) {
-      console.error('Failed to load policies from backend, using mockup data:', error)
-      
-      // Use mockup data as fallback on error
-      const mapped = MOCKUP_POLICIES.map(backendPolicyToTemplate)
+      const mapped = backendPolicies.map(backendPolicyToTemplate)
       setPolicies(mapped)
-      
-      // Cache mockup policies
+
       const cache = new Map<string, BackendPolicy>()
-      MOCKUP_POLICIES.forEach(policy => {
-        cache.set(policy.id, policy)
-      })
+      backendPolicies.forEach(policy => cache.set(policy.id, policy))
       setPoliciesCache(cache)
-      setUsingMockupData(true)
-      
-      // Select first policy by default
+
       if (mapped.length > 0 && !selectedPolicyId) {
         selectPolicy(mapped[0])
       }
-      
-      toast.warning(`Backend unavailable - Using demo policies`, { duration: 5000 })
+    } catch (error: any) {
+      console.error('Failed to load policies:', error)
+      toast.error('Failed to load policies. Please check your connection.')
     } finally {
       setIsLoadingPolicies(false)
     }
@@ -615,19 +509,28 @@ export function PolicyBuilderView() {
       }
     }
 
-    // Generate description from rules
-    let description = ""
-    if (policy.rules.maxAmount) {
-      description += `Max ${policy.rules.period || 'monthly'} spend: $${policy.rules.maxAmount}. `
-    }
-    if (policy.rules.maxTransactionAmount) {
-      description += `Max transaction: $${policy.rules.maxTransactionAmount}. `
-    }
-    if (policy.rules.allowedMerchants && policy.rules.allowedMerchants.length > 0) {
-      description += `Allowed merchants: ${policy.rules.allowedMerchants.join(', ')}. `
-    }
-    if (policy.rules.blockedMerchants && policy.rules.blockedMerchants.length > 0) {
-      description += `Blocked merchants: ${policy.rules.blockedMerchants.join(', ')}. `
+    // Use saved policy statement if available, otherwise reconstruct from rules
+    const savedStatement = (policy.conditions as any)?.policyStatement
+    let description = savedStatement || ""
+
+    if (!description) {
+      if (policy.rules.maxAmount) {
+        description += `Max ${policy.rules.period || 'monthly'} spend: $${policy.rules.maxAmount}. `
+      }
+      if (policy.rules.maxTransactionAmount) {
+        description += `Max transaction: $${policy.rules.maxTransactionAmount}. `
+      }
+      if (policy.rules.allowedMerchants && policy.rules.allowedMerchants.length > 0) {
+        description += `Allowed merchants: ${policy.rules.allowedMerchants.join(', ')}. `
+      }
+      if (policy.rules.blockedMerchants && policy.rules.blockedMerchants.length > 0) {
+        description += `Blocked merchants: ${policy.rules.blockedMerchants.join(', ')}. `
+      }
+      if (policy.rules.compositeConditions && policy.rules.compositeConditions.length > 0) {
+        description = policy.rules.compositeConditions
+          .map((c: any) => `${c.field} ${c.operator.replace(/_/g, ' ')} ${c.value}`)
+          .join(', ')
+      }
     }
 
     return {
@@ -649,6 +552,7 @@ export function PolicyBuilderView() {
     
     // Load full policy details from backend
     apiClient.getPolicy(template.id).then(policy => {
+      setPolicyEnabled(policy.enabled)
       // Map backend rules to our natural language format
       const hardRules: HardConstraint[] = []
       const softRules: SoftConstraint[] = []
@@ -687,15 +591,21 @@ export function PolicyBuilderView() {
       if (hardRules.length > 0) setHardConstraints(hardRules)
       if (softRules.length > 0) setSoftConstraints(softRules)
 
-      // Build policy statement from rules
-      let statement = ""
-      if (policy.rules.maxAmount) {
-        statement += `Agents can spend up to $${policy.rules.maxAmount} per ${policy.rules.period || 'month'}.\n`
+      // Restore the original natural language statement if it was saved
+      const savedStatement = (policy.conditions as any)?.policyStatement
+      if (savedStatement) {
+        setPolicyStatement(savedStatement)
+      } else {
+        // Fallback: reconstruct from rules for older policies
+        let statement = ""
+        if (policy.rules.maxAmount) {
+          statement += `Agents can spend up to $${policy.rules.maxAmount} per ${policy.rules.period || 'month'}.\n`
+        }
+        if (policy.rules.maxTransactionAmount) {
+          statement += `Purchases over $${policy.rules.maxTransactionAmount} need approval.\n`
+        }
+        if (statement) setPolicyStatement(statement)
       }
-      if (policy.rules.maxTransactionAmount) {
-        statement += `Purchases over $${policy.rules.maxTransactionAmount} need approval.\n`
-      }
-      if (statement) setPolicyStatement(statement)
     }).catch(error => {
       console.error('Failed to load policy details:', error)
       toast.error('Failed to load policy details')
@@ -720,12 +630,6 @@ export function PolicyBuilderView() {
   }
 
   const createNewPolicy = async () => {
-    // Prevent creating when using mockup data
-    if (usingMockupData) {
-      toast.warning("Cannot create new policies - using demo policies. Connect to backend to enable creating.")
-      return
-    }
-
     try {
       // Create a minimal policy in the backend
       const newBackendPolicy: BackendPolicy = {
@@ -763,12 +667,6 @@ export function PolicyBuilderView() {
       return
     }
 
-    // Prevent saving when using mockup data
-    if (usingMockupData) {
-      if (!silent) toast.warning("Cannot save - using demo policies. Connect to backend to enable saving.")
-      return
-    }
-
     setIsSaving(true)
     try {
       // Build backend policy from current editor state
@@ -776,12 +674,15 @@ export function PolicyBuilderView() {
         id: selectedPolicyId,
         name: policyName,
         type: "composite",
-        enabled: true,
+        enabled: policyEnabled,
         priority: 100,
         transactionTypes: transactionType === "both" ? ["all"] : 
                          transactionType === "a2a" ? ["agent-to-agent"] : 
                          ["agent-to-merchant"],
-        conditions: {},
+        conditions: {
+          // Persist the original natural language statement so it survives round-trips
+          policyStatement: policyStatement || undefined,
+        },
         rules: {}
       }
 
@@ -900,12 +801,6 @@ export function PolicyBuilderView() {
   const deletePolicy = async () => {
     if (!selectedPolicyId) return
 
-    // Prevent deleting when using mockup data
-    if (usingMockupData) {
-      toast.warning("Cannot delete demo policies. Connect to backend to enable deleting.")
-      return
-    }
-
     if (!confirm(`Are you sure you want to delete "${policyName}"?`)) {
       return
     }
@@ -937,12 +832,6 @@ export function PolicyBuilderView() {
   }
 
   const duplicatePolicy = async (policyId: string) => {
-    // Prevent duplicating when using mockup data
-    if (usingMockupData) {
-      toast.warning("Cannot duplicate demo policies. Connect to backend to enable duplicating.")
-      return
-    }
-
     try {
       // Load the source policy from backend
       const sourcePolicy = await apiClient.getPolicy(policyId)
@@ -1093,6 +982,20 @@ export function PolicyBuilderView() {
           </div>
 
           <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Switch
+                id="policy-enabled"
+                checked={policyEnabled}
+                onCheckedChange={async (checked) => {
+                  setPolicyEnabled(checked)
+                  await savePolicy(true)
+                }}
+              />
+              <Label htmlFor="policy-enabled" className={cn("text-sm font-medium cursor-pointer", policyEnabled ? "text-green-600" : "text-muted-foreground")}>
+                {policyEnabled ? "Active" : "Disabled"}
+              </Label>
+            </div>
+            <div className="w-px h-5 bg-border" />
             <Button 
               onClick={() => savePolicy(false)} 
               disabled={isSaving}

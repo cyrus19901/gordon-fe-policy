@@ -80,20 +80,13 @@ async function handleRequest(
       }
     }
     
-    // Debug logging
-    console.log('Proxy request:', {
-      method,
-      path: backendPath,
-      userEmail,
-      hasBody: !!body,
-    });
-
     // Build headers - forward Authorization from client if present
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
+    // Only forward Authorization if it's a real JWT (starts with eyJ), not a dev placeholder
     const authHeader = request.headers.get('authorization');
-    if (authHeader) {
+    if (authHeader && authHeader.replace('Bearer ', '').startsWith('eyJ')) {
       headers['Authorization'] = authHeader;
     }
 

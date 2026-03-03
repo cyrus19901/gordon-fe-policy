@@ -5,16 +5,12 @@ import { filterCompanySchema, VALID_FILTERS } from "@/lib/schemas/filter-schema"
 
 export async function POST(request: NextRequest) {
   try {
-    console.log("[v0] API route called")
     const { query } = await request.json()
-    console.log("[v0] Query received:", query)
 
     if (!query || typeof query !== "string") {
-      console.log("[v0] Invalid query provided")
       return NextResponse.json({ error: "Query is required" }, { status: 400 })
     }
 
-    console.log("[v0] Starting AI processing with OpenAI")
 
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error("AI request timeout")), 15000) // 15 second timeout
@@ -55,9 +51,7 @@ Examples:
       temperature: 0.3,
     })
 
-    console.log("[v0] Waiting for AI response...")
     const result = (await Promise.race([aiPromise, timeoutPromise])) as any
-    console.log("[v0] AI processing completed, result:", result.object)
 
     return NextResponse.json({ filters: result.object })
   } catch (error) {

@@ -147,7 +147,6 @@ export function SpendBreakdownSection() {
           
           if (data.spendingByCategory) {
             setRealCategories(data.spendingByCategory);
-            console.log('Category breakdown:', data.spendingByCategory);
           }
         } catch (error) {
           console.error('Failed to fetch spending data:', error);

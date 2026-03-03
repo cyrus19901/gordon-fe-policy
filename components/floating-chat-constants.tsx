@@ -84,12 +84,11 @@ export const mobileBarVariants = {
 }
 
 export const barTransition = {
-  type: "spring",
+  type: "spring" as const,
   stiffness: 400,
   damping: 30,
   mass: 0.8,
-  // Add specific transitions for border radius morphing
-  borderRadius: { duration: 0.4, ease: "easeInOut" },
+  borderRadius: { duration: 0.4, ease: "easeInOut" as const },
 }
 
 export const listVariants = {
@@ -104,8 +103,8 @@ export const itemVariants = {
 
 export const viewMotionVariants = {
   initial: { opacity: 0, x: 20 },
-  enter: { opacity: 1, x: 0, transition: { duration: 0.3, ease: "easeOut" } },
-  exit: { opacity: 0, x: -20, transition: { duration: 0.2, ease: "easeIn" } },
+  enter: { opacity: 1, x: 0, transition: { duration: 0.3, ease: "easeOut" as const } },
+  exit: { opacity: 0, x: -20, transition: { duration: 0.2, ease: "easeIn" as const } },
 }
 
 export const fadeVariants = {
