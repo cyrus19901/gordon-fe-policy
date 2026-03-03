@@ -12,72 +12,94 @@ import {
 import { Settings, LogOut, Linkedin, Mail, CheckCircle2, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 
 interface ProfileMenuProps {
   onNavigateToSettings?: () => void
 }
 
+interface CurrentUser {
+  id: string
+  email: string
+  name: string
+}
+
 export function ProfileMenu({ onNavigateToSettings }: ProfileMenuProps) {
+  const router = useRouter()
   const [avatarUrl, setAvatarUrl] = useState<string>("/animated-avatar.gif")
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [connectedAccounts, setConnectedAccounts] = useState({
     linkedin: false,
     gmail: false,
   })
 
-  // Load connected accounts and avatar from localStorage on mount
   useEffect(() => {
+    // Fetch the current logged-in user from session
+    fetch('/api/auth/me')
+      .then(res => res.ok ? res.json() : null)
+      .then(user => { if (user) setCurrentUser(user) })
+      .catch(() => {})
+
     const storedLinkedin = localStorage.getItem("linkedin_connected")
     const storedGmail = localStorage.getItem("gmail_connected")
     const storedAvatar = localStorage.getItem("user_avatar")
 
-    if (storedLinkedin === "true") {
-      setConnectedAccounts((prev) => ({ ...prev, linkedin: true }))
-    }
-    if (storedGmail === "true") {
-      setConnectedAccounts((prev) => ({ ...prev, gmail: true }))
-    }
-    if (storedAvatar) {
-      setAvatarUrl(storedAvatar)
-    }
+    if (storedLinkedin === "true") setConnectedAccounts(prev => ({ ...prev, linkedin: true }))
+    if (storedGmail === "true") setConnectedAccounts(prev => ({ ...prev, gmail: true }))
+    if (storedAvatar) setAvatarUrl(storedAvatar)
 
-    // Listen for storage changes to sync avatar across tabs/components
     const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === "user_avatar" && e.newValue) {
-        setAvatarUrl(e.newValue)
-      }
-      if (e.key === "linkedin_connected") {
-        setConnectedAccounts((prev) => ({ ...prev, linkedin: e.newValue === "true" }))
-      }
-      if (e.key === "gmail_connected") {
-        setConnectedAccounts((prev) => ({ ...prev, gmail: e.newValue === "true" }))
-      }
+      if (e.key === "user_avatar" && e.newValue) setAvatarUrl(e.newValue)
+      if (e.key === "linkedin_connected") setConnectedAccounts(prev => ({ ...prev, linkedin: e.newValue === "true" }))
+      if (e.key === "gmail_connected") setConnectedAccounts(prev => ({ ...prev, gmail: e.newValue === "true" }))
     }
 
     window.addEventListener("storage", handleStorageChange)
     return () => window.removeEventListener("storage", handleStorageChange)
   }, [])
-  // </CHANGE>
 
-  const handleLogout = () => {
-    toast.success("Logged out successfully")
-    // TODO: Implement actual logout logic when auth is added
+  const handleLogout = async () => {
+    if (isLoggingOut) return
+    setIsLoggingOut(true)
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' })
+      toast.success("Logged out successfully")
+      router.push('/auth/login')
+    } catch {
+      toast.error("Logout failed, please try again")
+      setIsLoggingOut(false)
+    }
   }
+
+  // Build display name and initials from the real user
+  const displayName = currentUser?.name
+    ? currentUser.name.replace(/\b\w/g, l => l.toUpperCase())
+    : currentUser?.email?.split('@')[0] ?? '…'
+
+  const displayEmail = currentUser?.email ?? ''
+
+  const initials = displayName
+    .split(' ')
+    .slice(0, 2)
+    .map(w => w[0]?.toUpperCase() ?? '')
+    .join('') || displayName[0]?.toUpperCase() || '?'
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button className="rounded-full focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 transition-all">
           <Avatar className="h-8 w-8 cursor-pointer hover:opacity-80 transition-opacity">
-            <AvatarImage src={avatarUrl || "/placeholder.svg"} alt="User avatar" />
-            <AvatarFallback>E</AvatarFallback>
+            <AvatarImage src={avatarUrl || "/placeholder.svg"} alt={displayName} />
+            <AvatarFallback>{initials}</AvatarFallback>
           </Avatar>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>
           <div className="flex flex-col space-y-1">
-            <p className="text-sm font-medium">Eduardo</p>
-            <p className="text-xs text-muted-foreground">eduardo@company.com</p>
+            <p className="text-sm font-medium">{displayName}</p>
+            <p className="text-xs text-muted-foreground">{displayEmail}</p>
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
@@ -116,9 +138,13 @@ export function ProfileMenu({ onNavigateToSettings }: ProfileMenuProps) {
           <span>Settings</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={handleLogout} variant="destructive">
+        <DropdownMenuItem
+          onClick={handleLogout}
+          disabled={isLoggingOut}
+          variant="destructive"
+        >
           <LogOut className="mr-2 h-4 w-4" />
-          <span>Logout</span>
+          <span>{isLoggingOut ? "Logging out…" : "Logout"}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

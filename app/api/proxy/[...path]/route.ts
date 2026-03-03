@@ -104,6 +104,16 @@ async function handleRequest(
       body,
     });
 
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      const text = await response.text();
+      console.error(`Proxy: backend returned non-JSON for ${backendPath}:`, text.slice(0, 200));
+      return NextResponse.json(
+        { error: `Backend route not found: ${backendPath}`, status: response.status },
+        { status: response.status === 404 ? 404 : 502 }
+      );
+    }
+
     const data = await response.json();
 
     return NextResponse.json(data, {

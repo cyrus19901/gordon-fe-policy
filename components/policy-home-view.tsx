@@ -168,15 +168,79 @@ export function PolicyHomeView({ onNavigate }: PolicyHomeViewProps) {
     }
   }
 
-  const policyData = {
+  const [policyData, setPolicyData] = useState({
     name: "Agent Spend Policy",
-    effectiveDate: "January 15, 2026",
-    inPolicySpend: 80,
-    inPolicySpendChange: "+2.3%",
-    activeAgents: 12,
-    approvalAccuracy: 94,
-    approvalAccuracyChange: "+1.5%",
-  }
+    effectiveDate: "—",
+    inPolicySpend: 0,
+    inPolicySpendChange: "—",
+    activeAgents: 0,
+    approvalAccuracy: 0,
+    approvalAccuracyChange: "—",
+  })
+
+  // Fetch real dashboard data from the backend
+  useEffect(() => {
+    const loadDashboard = async () => {
+      try {
+        const [dashRes, accuracyRes, agentsRes] = await Promise.all([
+          fetch('/api/proxy/dashboard'),
+          fetch('/api/proxy/approval-accuracy'),
+          fetch('/api/proxy/registry/agents'),
+        ])
+
+        if (dashRes.ok) {
+          const dash = await dashRes.json()
+          const compliance = dash.compliance ?? {}
+          const policies = dash.policies ?? {}
+
+          // Policy name: first enabled policy or fallback
+          const firstPolicy = policies.list?.[0]
+          const policyName = firstPolicy?.name ?? "Agent Spend Policy"
+
+          // Effective date: formatted created_at of first policy
+          let effectiveDate = "—"
+          if (firstPolicy?.created_at) {
+            effectiveDate = new Date(firstPolicy.created_at).toLocaleDateString("en-US", {
+              month: "long", day: "numeric", year: "numeric"
+            })
+          }
+
+          // Trend sign
+          const trend = compliance.trend ?? 0
+          const trendStr = trend === 0 ? "—" : `${trend > 0 ? "+" : ""}${trend.toFixed(1)}%`
+
+          setPolicyData(prev => ({
+            ...prev,
+            name: policyName,
+            effectiveDate,
+            inPolicySpend: Math.round(compliance.compliancePercentage ?? 0),
+            inPolicySpendChange: trendStr,
+          }))
+        }
+
+        if (accuracyRes.ok) {
+          const acc = await accuracyRes.json()
+          setPolicyData(prev => ({
+            ...prev,
+            approvalAccuracy: acc.accuracy ?? 0,
+          }))
+        }
+
+        if (agentsRes.ok) {
+          const agentsData = await agentsRes.json()
+          // /api/registry/agents returns { agents: [...] }
+          const agents: any[] = agentsData.agents ?? (Array.isArray(agentsData) ? agentsData : [])
+          setPolicyData(prev => ({
+            ...prev,
+            activeAgents: agents.filter((a: any) => a.active !== false).length,
+          }))
+        }
+      } catch (err) {
+        console.error("Failed to load dashboard stats:", err)
+      }
+    }
+    loadDashboard()
+  }, [])
 
   const [showPendingApprovals, setShowPendingApprovals] = useState(false)
 
