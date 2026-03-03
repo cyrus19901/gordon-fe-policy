@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import crypto from 'crypto';
+import otpStore from '@/lib/otp-store';
 
-// Simple in-memory store for OTPs (in production, use a database)
-const otpStore = new Map<string, { otp: string; expires: number; email: string }>();
-
-// Development mode: bypass OTP verification
-const BYPASS_OTP = process.env.BYPASS_OTP === 'true' || process.env.NODE_ENV === 'development';
+const BYPASS_OTP = process.env.BYPASS_OTP === 'true';
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,8 +28,7 @@ export async function POST(request: NextRequest) {
 
     // If bypassing OTP, create user in database and session
     if (BYPASS_OTP) {
-      // Create or get user from backend database
-      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
       
       let user;
       try {
@@ -143,8 +139,7 @@ export async function POST(request: NextRequest) {
     }
 
     // OTP is valid - create user in database and session
-    // Call backend to create/get user
-    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
     
     let user;
     try {

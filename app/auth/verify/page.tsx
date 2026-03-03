@@ -179,7 +179,15 @@ export default function VerifyPage() {
                     </span>
                   ) : (
                     <button
-                      onClick={() => setTimeLeft(30)}
+                      onClick={async () => {
+                        if (!email) return;
+                        setTimeLeft(30);
+                        await fetch('/api/auth/request-otp', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ email }),
+                        });
+                      }}
                       className="text-primary hover:underline font-medium"
                     >
                       Resend code
