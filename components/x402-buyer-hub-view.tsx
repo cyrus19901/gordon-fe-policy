@@ -105,25 +105,56 @@ function chainAvatarLetter(name: string): string {
 
 function deriveServiceInputGuide(provider?: AnyObj): {
   title: string
+  serviceSummary: string
+  method: string
+  endpoint: string
+  inputMode: "GET query params" | "POST JSON body" | "request"
   required: string[]
   optional: string[]
+  outputSummary: string[]
   exampleInput: string
 } {
   if (!provider) {
     return {
       title: "Select a service to see expected input",
+      serviceSummary: "Choose a provider to inspect its payment terms and API contract.",
+      method: "GET",
+      endpoint: "",
+      inputMode: "request",
       required: [],
       optional: [],
+      outputSummary: [],
       exampleInput: "https://example.com",
     }
   }
 
   const accept = provider?.metadata?.probeSnapshot?.rawAccepts?.[0] || {}
   const inputSchema = accept?.outputSchema?.input || {}
+  const outputSchema = accept?.outputSchema?.output || {}
   const bodySchema = inputSchema?.body || {}
   const bodyProps = bodySchema?.properties || {}
   const required = new Set<string>()
   const optional = new Set<string>()
+  const method = String(inputSchema?.method || provider?.metadata?.method || "GET").toUpperCase()
+  const endpoint = String(provider?.metadata?.endpoints?.request || provider?.endpoint || "")
+  const description = String(accept?.description || provider?.metadata?.description || "").trim()
+  const outputLines: string[] = []
+
+  // Build an output preview line list from schema when available.
+  const outputProps = outputSchema?.properties || outputSchema?.content?.["application/json"]?.schema?.properties || {}
+  if (outputProps && typeof outputProps === "object") {
+    for (const [k, v] of Object.entries(outputProps as Record<string, any>).slice(0, 8)) {
+      const t = String((v as any)?.type || "value")
+      outputLines.push(`${k}: ${t}`)
+    }
+  } else if (Array.isArray(outputSchema?.oneOf)) {
+    const keys = new Set<string>()
+    for (const variant of outputSchema.oneOf) {
+      const props = variant?.properties || {}
+      for (const k of Object.keys(props)) keys.add(k)
+    }
+    if (keys.size) outputLines.push(`oneOf fields: ${[...keys].slice(0, 8).join(", ")}`)
+  }
 
   const bodyFields = inputSchema?.bodyFields || {}
   for (const [k, v] of Object.entries(bodyFields as Record<string, any>)) {
@@ -145,11 +176,17 @@ function deriveServiceInputGuide(provider?: AnyObj): {
   const req = [...required]
   const opt = [...optional].filter((k) => !required.has(k))
   const exampleInput = req.includes("url") ? "https://en.wikipedia.org/wiki/Gordon" : "gordon"
+  const inputMode = method === "POST" ? "POST JSON body" : method === "GET" ? "GET query params" : "request"
 
   return {
     title: `${provider.name || provider.id} expects ${inputSchema?.method || provider?.metadata?.method || "request"} input`,
+    serviceSummary: description || "No service description provided by provider catalog.",
+    method,
+    endpoint,
+    inputMode,
     required: req,
     optional: opt,
+    outputSummary: outputLines,
     exampleInput,
   }
 }
@@ -183,9 +220,11 @@ export function X402BuyerHubView() {
   const [treasury, setTreasury] = useState<AnyObj>({})
   const [keys, setKeys] = useState<AnyObj[]>([])
   const [providers, setProviders] = useState<AnyObj[]>([])
+  const [registryAgents, setRegistryAgents] = useState<AnyObj[]>([])
+  const [policies, setPolicies] = useState<AnyObj[]>([])
   const [mkQuery, setMkQuery] = useState("firecrawl")
   /** Discovery filters — passed to GET /v1/marketplace/browse */
-  const [mkSourceFilter, setMkSourceFilter] = useState<"" | "x402.direct" | "x402scout" | "orthogonal">("")
+  const [mkSourceFilter, setMkSourceFilter] = useState<"" | "x402.direct" | "x402scout" | "orthogonal" | "bazaar+orthogonal">("")
   const [mkCategory, setMkCategory] = useState("")
   const [mkMinTrust, setMkMinTrust] = useState("")
   const [mkHasPrice, setMkHasPrice] = useState(false)
@@ -193,6 +232,7 @@ export function X402BuyerHubView() {
   const [marketSources, setMarketSources] = useState<AnyObj>({})
   const [selectedProvider, setSelectedProvider] = useState("")
   const [selectedAction, setSelectedAction] = useState("request")
+  const [preferredNetwork, setPreferredNetwork] = useState("")
   const [requestInput, setRequestInput] = useState("https://example.com")
   const [execResult, setExecResult] = useState<AnyObj | null>(null)
   const [execTrace, setExecTrace] = useState<string[]>([])
@@ -202,10 +242,14 @@ export function X402BuyerHubView() {
   const [showRawOutput, setShowRawOutput] = useState(false)
   const [responseTab, setResponseTab] = useState<"summary" | "content" | "raw">("summary")
   const [policyModalOpen, setPolicyModalOpen] = useState(false)
-  const [policyMode, setPolicyMode] = useState<"provider" | "user">("provider")
+  const [policyMode, setPolicyMode] = useState<"agent" | "user">("agent")
   const [policyProviderId, setPolicyProviderId] = useState("")
   const [policyUserEmail, setPolicyUserEmail] = useState("")
+  const [selectedExistingPolicyId, setSelectedExistingPolicyId] = useState("")
+  const [currentUserPolicies, setCurrentUserPolicies] = useState<AnyObj[]>([])
+  const [currentAgentPolicies, setCurrentAgentPolicies] = useState<AnyObj[]>([])
   const [policyCap, setPolicyCap] = useState("0.05")
+  const [policyMinTrust, setPolicyMinTrust] = useState("0.7")
   const [policyFallback, setPolicyFallback] = useState<"deny" | "require_approval" | "flag_review" | "approve">("deny")
 
   const selectedProviderObj = useMemo(
@@ -260,7 +304,7 @@ export function X402BuyerHubView() {
   async function loadAll() {
     if (!apiKey) return
     try {
-      const [wallet, chainsJson, treasuryRes, providersRes, keysRes] = await Promise.all([
+      const [wallet, chainsJson, treasuryRes, providersRes, keysRes, policiesRes, registryAgentsRes] = await Promise.all([
         fetch("/api/proxy/demo/wallet", {
           headers: { "X-API-Key": apiKey },
           credentials: "include",
@@ -270,8 +314,10 @@ export function X402BuyerHubView() {
           credentials: "include",
         }).then((r) => r.json().catch(() => ({}))),
         proxyFetch("/v1/treasury"),
-        proxyFetch("/v1/providers"),
+        proxyFetch("/v1/providers?include_disabled=true"),
         proxyFetch("/v1/orgs/me/api-keys"),
+        proxyFetch("/v1/policies"),
+        proxyFetch("/registry/agents").catch(() => ({ agents: [] })),
       ])
       setWalletInfo(wallet || {})
       if (Array.isArray(chainsJson?.chains) && chainsJson.chains.length) {
@@ -280,7 +326,9 @@ export function X402BuyerHubView() {
       setTreasury(treasuryRes || {})
       const pureProviders = (providersRes?.providers || []).filter(isPureX402Provider)
       setProviders(pureProviders)
+      setRegistryAgents(Array.isArray(registryAgentsRes?.agents) ? registryAgentsRes.agents : [])
       setKeys(keysRes?.keys || [])
+      setPolicies(policiesRes?.policies || [])
       if (!selectedProvider && pureProviders.length) {
         const first = pureProviders[0]
         setSelectedProvider(first.id)
@@ -293,7 +341,7 @@ export function X402BuyerHubView() {
 
   async function browseMarketplace(overrides?: {
     query?: string
-    source?: "" | "x402.direct" | "x402scout" | "orthogonal"
+    source?: "" | "x402.direct" | "x402scout" | "orthogonal" | "bazaar+orthogonal"
     category?: string
     minTrust?: string
     hasPrice?: boolean
@@ -308,7 +356,8 @@ export function X402BuyerHubView() {
       const params = new URLSearchParams()
       params.set("q", qText)
       params.set("limit", "24")
-      if (source) params.set("source", source)
+      if (source === "bazaar+orthogonal") params.set("sources", "x402scout,orthogonal")
+      else if (source) params.set("source", source)
       if (category.trim()) params.set("category", category.trim().toLowerCase())
       const mt = Number(minTrustStr)
       if (String(minTrustStr).trim() && Number.isFinite(mt)) params.set("minTrust", String(mt))
@@ -321,13 +370,21 @@ export function X402BuyerHubView() {
     }
   }
 
-  async function registerService(url: string, name: string, category = "utility", source = "marketplace", description = "") {
+  async function registerService(url: string, name: string, category = "utility", source = "marketplace", description = "", trustScore?: number | null) {
     try {
-      await proxyFetch("/v1/marketplace/register", {
+      const data = await proxyFetch("/v1/marketplace/register", {
         method: "POST",
-        body: JSON.stringify({ url, name, category, source, description }),
+        body: JSON.stringify({
+          url, name, category, source, description, require_strict: false,
+          ...(trustScore != null && Number.isFinite(Number(trustScore)) ? { trust_score: Number(trustScore) } : {}),
+        }),
       })
-      toast.success("Service registered")
+      const registered = data?.provider
+      if (registered?.id) {
+        setSelectedProvider(registered.id)
+        setSelectedAction(registered?.actions?.[0] || "request")
+      }
+      toast.success(`Service registered: ${registered?.name || name}`)
       await loadAll()
       if (mkQuery.trim()) await browseMarketplace()
     } catch (err: any) {
@@ -425,15 +482,16 @@ export function X402BuyerHubView() {
   async function createScopedPolicyFromModal() {
     try {
       const cap = Number(policyCap || 0)
+      const minTrust = Number(policyMinTrust || 0)
       if (!Number.isFinite(cap) || cap <= 0) throw new Error("Policy cap must be > 0")
-      if (policyMode === "provider" && !policyProviderId) throw new Error("Select a provider")
+      if (policyMode === "agent" && !policyProviderId) throw new Error("Select an agent")
       if (policyMode === "user" && !policyUserEmail.trim()) throw new Error("Enter user email")
 
       const timestamp = new Date().toISOString().slice(0, 10)
-      const isProvider = policyMode === "provider"
-      const policyBody = isProvider
+      const isAgent = policyMode === "agent"
+      const policyBody = isAgent
         ? {
-            name: `Provider Guard: ${policyProviderId} (${timestamp})`,
+            name: `Agent Guard: ${policyProviderId} (${timestamp})`,
             type: "merchant",
             enabled: true,
             priority: 96,
@@ -441,30 +499,43 @@ export function X402BuyerHubView() {
             rules: {
               allowedMerchants: [policyProviderId],
               maxTransactionAmount: cap,
+              ...(Number.isFinite(minTrust) && minTrust > 0 ? { minTrustScore: minTrust } : {}),
               fallbackAction: policyFallback,
             },
           }
-        : {
-            name: `User Guard: ${policyUserEmail.trim()} (${timestamp})`,
-            type: "transaction",
-            enabled: true,
-            priority: 95,
-            conditions: {
-              transactionType: ["agent-to-agent"],
-              // kept for traceability in policy payload until strict per-user execution context is wired
-              targetUserEmail: policyUserEmail.trim().toLowerCase(),
-            },
-            rules: {
-              maxTransactionAmount: cap,
-              fallbackAction: policyFallback,
-            },
-          }
+        : null
 
-      await proxyFetch("/v1/policies", {
-        method: "POST",
-        body: JSON.stringify(policyBody),
-      })
-      toast.success(`${isProvider ? "Provider" : "User"} policy created`)
+      if (isAgent) {
+        const created = await proxyFetch("/v1/policies", {
+          method: "POST",
+          body: JSON.stringify(policyBody),
+        })
+        const createdPolicyId = String(
+          created?.policy?.id ||
+          created?.id ||
+          created?.policy_id ||
+          "",
+        )
+        if (!createdPolicyId) throw new Error("Failed to resolve created policy id")
+        await proxyFetch("/agents/policies/assign", {
+          method: "POST",
+          body: JSON.stringify({
+            agent_id: policyProviderId,
+            policy_id: createdPolicyId,
+          }),
+        })
+        toast.success("Agent policy created and assigned")
+        await loadCurrentAgentPolicies(policyProviderId)
+      } else {
+        if (!selectedExistingPolicyId) throw new Error("Select an existing policy to assign")
+        if (!currentUser?.id) throw new Error("Current user not resolved from session")
+        await proxyFetch(`/users/${currentUser.id}/policies/${selectedExistingPolicyId}`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        })
+        toast.success(`Policy assigned to ${policyUserEmail.trim().toLowerCase()}`)
+        await loadCurrentUserPolicies()
+      }
       setPolicyModalOpen(false)
       await loadAll()
     } catch (err: any) {
@@ -477,6 +548,10 @@ export function X402BuyerHubView() {
       toast.error("Select provider")
       return
     }
+    if (!currentUser?.email) {
+      toast.error("Not logged in")
+      return
+    }
     setBusy(true)
     setExecResult(null)
     setExecTrace([])
@@ -484,65 +559,39 @@ export function X402BuyerHubView() {
       const trace = (line: string) => {
         setExecTrace((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${line}`])
       }
-      const body = {
-        provider: selectedProvider,
+
+      const selectedProv = providers.find((p) => p.id === selectedProvider)
+      const acceptedNetworks: string[] = selectedProv?.metadata?.probeSnapshot?.rawAccepts
+        ?.map((a: AnyObj) => String(a.network || ""))
+        .filter(Boolean) ?? []
+
+      trace(`POST /v1/payments/pay  provider=${selectedProvider} action=${selectedAction}${preferredNetwork ? ` preferred_network=${preferredNetwork}` : ""}`)
+      trace(`Accepted networks: ${acceptedNetworks.join(", ") || "none stored"}`)
+
+      const body: AnyObj = {
+        provider_id: selectedProvider,
         action: selectedAction,
         params: { url: requestInput, query: requestInput, domain: requestInput, input: requestInput },
-        max_payment_usdc: 0.5,
+        user_email: currentUser.email,
+        ...(preferredNetwork ? { preferred_network: preferredNetwork } : {}),
       }
-      trace(`POST /api/proxy/v1/payments/execute (quote) provider=${selectedProvider} action=${selectedAction}`)
-      const quote = await fetch("/api/proxy/v1/payments/execute", {
+
+      const res = await proxyFetch("/v1/payments/pay", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
-        credentials: "include",
         body: JSON.stringify(body),
       })
-      const quoteData = await quote.json().catch(() => ({}))
-      trace(`Quote response status=${quote.status}`)
-      if (quote.status !== 402) {
-        trace("No 402 challenge returned — execution ended in direct mode")
-        setExecResult({ phase: "direct", data: quoteData, status: quote.status })
-        return
-      }
-      const amount = quoteData?.accepts?.[0]?.maxAmountRequired
-      const payTo = quoteData?.accepts?.[0]?.payTo
-      trace(`402 PAYMENT-REQUIRED amountAtomic=${amount || "n/a"} payTo=${payTo || "n/a"}`)
+      const result: AnyObj = res && typeof res === "object" ? res : {}
 
-      trace("POST /api/proxy/demo/sign-x402")
-      const signRes = await fetch("/api/proxy/demo/sign-x402", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
-        credentials: "include",
-        body: JSON.stringify(quoteData),
-      })
-      const signData = await signRes.json().catch(() => ({}))
-      trace(`Signer response status=${signRes.status}`)
-      if (!signRes.ok || !signData.paymentHeader) {
-        trace(`Signing failed: ${signData?.error || "missing paymentHeader"}`)
-        throw new Error(signData?.error || "Signing failed")
-      }
-      trace(`Signed payment buyer=${signData?.buyerAddress || "n/a"} amount=${signData?.amountUsdc || "n/a"} ${signData?.chainName || ""}`.trim())
+      trace(`Response: status=${result.status || "n/a"} network=${result.network || "n/a"} priceUsdc=${result.priceUsdc ?? "n/a"} paymentId=${result.paymentId || "n/a"}`)
 
-      trace("POST /api/proxy/v1/payments/execute (paid retry with PAYMENT-SIGNATURE)")
-      const paid = await fetch("/api/proxy/v1/payments/execute", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": apiKey,
-          "PAYMENT-SIGNATURE": signData.paymentHeader,
-        },
-        credentials: "include",
-        body: JSON.stringify(body),
-      })
-      const paidData = await paid.json().catch(() => ({}))
-      trace(`Paid response status=${paid.status} paymentId=${paidData?.paymentId || "n/a"} outcome=${paidData?.status || "n/a"}`)
-      setExecResult({
-        phase: "paid",
-        quote: quoteData,
-        sign: { buyerAddress: signData.buyerAddress, amountUsdc: signData.amountUsdc, chainName: signData.chainName },
-        paidStatus: paid.status,
-        data: paidData,
-      })
+      if (result.status === "completed") {
+        trace(`Settled on ${result.chainName || result.network} · payTo=${result.payTo ? result.payTo.slice(0, 10) + "…" : "n/a"}`)
+        trace("Payment complete ✓")
+      } else if (result.error) {
+        trace(`Error: ${result.error?.message || result.error?.code || JSON.stringify(result.error)}`)
+      }
+
+      setExecResult({ phase: result.status === "completed" ? "paid" : "error", data: result })
     } catch (err: any) {
       setExecTrace((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Error: ${err.message}`])
       setExecResult({ phase: "error", error: err.message })
@@ -557,16 +606,78 @@ export function X402BuyerHubView() {
   }, [])
 
   useEffect(() => {
-    if (!policyProviderId && providers.length > 0) {
-      setPolicyProviderId(providers[0].id)
+    if (!policyProviderId && registryAgents.length > 0) {
+      setPolicyProviderId(String(registryAgents[0]?.agentId || ""))
     }
-  }, [providers, policyProviderId])
+  }, [registryAgents, policyProviderId])
 
   useEffect(() => {
     if (!policyUserEmail && currentUser?.email) {
       setPolicyUserEmail(String(currentUser.email))
     }
   }, [currentUser, policyUserEmail])
+
+  useEffect(() => {
+    if (!selectedExistingPolicyId && policies.length > 0) {
+      setSelectedExistingPolicyId(String(policies[0].id))
+    }
+  }, [policies, selectedExistingPolicyId])
+
+  async function loadCurrentUserPolicies() {
+    if (!apiKey || !currentUser?.id) return
+    try {
+      const data = await proxyFetch(`/users/${currentUser.id}`)
+      setCurrentUserPolicies(data?.policies || [])
+    } catch {
+      setCurrentUserPolicies([])
+    }
+  }
+
+  async function removeAssignedPolicy(policyId: string) {
+    if (!currentUser?.id) return
+    try {
+      await proxyFetch(`/users/${currentUser.id}/policies/${policyId}`, {
+        method: "DELETE",
+        body: JSON.stringify({}),
+      })
+      toast.success("Policy unassigned")
+      await loadCurrentUserPolicies()
+    } catch (err: any) {
+      toast.error(`Failed to unassign policy: ${err.message}`)
+    }
+  }
+
+  async function loadCurrentAgentPolicies(agentId?: string) {
+    if (!apiKey) return
+    const selectedAgentId = String(agentId || policyProviderId || "")
+    if (!selectedAgentId) {
+      setCurrentAgentPolicies([])
+      return
+    }
+    try {
+      const data = await proxyFetch(`/agents/policies?agent_id=${encodeURIComponent(selectedAgentId)}`)
+      setCurrentAgentPolicies(Array.isArray(data?.policies) ? data.policies : [])
+    } catch {
+      setCurrentAgentPolicies([])
+    }
+  }
+
+  async function removeAssignedAgentPolicy(policyId: string) {
+    if (!policyProviderId) return
+    try {
+      await proxyFetch("/agents/policies/assign", {
+        method: "DELETE",
+        body: JSON.stringify({
+          agent_id: policyProviderId,
+          policy_id: policyId,
+        }),
+      })
+      toast.success("Policy removed from agent")
+      await loadCurrentAgentPolicies(policyProviderId)
+    } catch (err: any) {
+      toast.error(`Failed to remove agent policy: ${err.message}`)
+    }
+  }
 
   useEffect(() => {
     ;(async () => {
@@ -596,6 +707,16 @@ export function X402BuyerHubView() {
   }, [apiKey])
 
   useEffect(() => {
+    void loadCurrentUserPolicies()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiKey, currentUser?.id])
+
+  useEffect(() => {
+    void loadCurrentAgentPolicies(policyProviderId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiKey, policyProviderId])
+
+  useEffect(() => {
     if (!selectedProviderObj) return
     const nextInput = inputGuide.exampleInput
     if (nextInput && (!requestInput || requestInput === "https://example.com")) {
@@ -608,19 +729,45 @@ export function X402BuyerHubView() {
   const onboardingReady = Boolean(currentUser?.email) && Boolean(apiKey) && walletReady
   const readinessCount = [Boolean(currentUser?.email), Boolean(apiKey), walletReady].filter(Boolean).length
   const readinessPct = Math.round((readinessCount / 3) * 100)
-  const paidData = execResult?.data || {}
+  // /payments/pay returns a flat result object
+  const payResult: AnyObj = execResult?.data && execResult.data.paymentId ? execResult.data : {}
+  const payCompleted = payResult?.status === "completed"
+
+  // Legacy org-treasury path kept for backward compat (execResult.data.x402Settlement)
+  const paidData: AnyObj = payCompleted ? payResult : (execResult?.data || {})
   const settlement = paidData?.x402Settlement || {}
   const price = paidData?.priceBreakdown || execResult?.quote?.priceBreakdown || {}
+
+  // For /payments/pay the response data is under paidData.data
+  const providerResponse: AnyObj = payCompleted
+    ? (typeof paidData.data === "object" && paidData.data !== null ? paidData.data : {})
+    : {}
+
   const processedContent =
-    paidData?.data?.result?.data?.processed_content ||
+    providerResponse?.result?.data?.processed_content ||
+    providerResponse?.data?.processed_content ||
+    (typeof providerResponse === "string" ? providerResponse : "") ||
     paidData?.serviceResult?.raw?.result?.data?.processed_content ||
     paidData?.serviceResult?.content ||
     ""
   const cleanedContent = cleanResponseText(processedContent)
   const summaryBullets = toSummaryBullets(cleanedContent)
-  const sourceUrl = paidData?.data?.result?.data?.url || paidData?.serviceResult?.raw?.result?.data?.url || ""
-  const txHash = settlement?.txHash
-  const txUrl = txHash ? `${getExplorerBaseUrl(settlement?.network || execResult?.sign?.chainName)}${txHash}` : ""
+  const sourceUrl =
+    providerResponse?.result?.data?.url ||
+    paidData?.data?.result?.data?.url ||
+    paidData?.serviceResult?.raw?.result?.data?.url || ""
+  const txHash = payResult?.settlement?.txHash || settlement?.txHash
+  const txUrl =
+    payResult?.settlement?.explorerUrl ||
+    (txHash ? `${getExplorerBaseUrl(payResult?.settlement?.network || settlement?.network || payResult?.network || execResult?.sign?.chainName)}${txHash}` : "")
+
+  // Accepted networks for the selected provider (shown in network selector)
+  const selectedProviderAccepts: string[] = useMemo(() => {
+    const prov = providers.find((p) => p.id === selectedProvider)
+    return prov?.metadata?.probeSnapshot?.rawAccepts
+      ?.map((a: AnyObj) => String(a.network || ""))
+      .filter(Boolean) ?? []
+  }, [providers, selectedProvider])
 
   const signerAddress = String(walletInfo?.address || settlementWallet?.address || "")
 
@@ -852,12 +999,6 @@ export function X402BuyerHubView() {
 
           {/* Section: Actions */}
           <div className="flex flex-wrap gap-2 border-t border-border/50 p-5">
-            <Button type="button" variant="outline" size="sm" className="h-9" onClick={createManagedWallet}>
-              Sync settlement preview
-            </Button>
-            <Button type="button" variant="outline" size="sm" className="h-9" onClick={createQuickPolicy}>
-              Create Demo Policy
-            </Button>
             <Button type="button" variant="outline" size="sm" className="h-9" onClick={() => setPolicyModalOpen(true)}>
               Assign Policy
             </Button>
@@ -870,64 +1011,145 @@ export function X402BuyerHubView() {
           <DialogHeader>
             <DialogTitle>Assign Policy Scope</DialogTitle>
             <DialogDescription>
-              Create a policy scoped to a provider (enforced now) or user (template scope for buyer demo narrative).
+              Agent policies are assigned to registered registry agents. User policies are assigned directly to the logged-in user.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <div className="flex gap-2">
-              <Button type="button" variant={policyMode === "provider" ? "default" : "outline"} onClick={() => setPolicyMode("provider")}>
-                Provider-based
+              <Button type="button" variant={policyMode === "agent" ? "default" : "outline"} onClick={() => setPolicyMode("agent")}>
+                Agent policy
               </Button>
               <Button type="button" variant={policyMode === "user" ? "default" : "outline"} onClick={() => setPolicyMode("user")}>
-                User-based
+                User policy
               </Button>
             </div>
 
-            {policyMode === "provider" ? (
+            {policyMode === "agent" ? (
               <div className="space-y-2">
-                <Label>Provider</Label>
+                <Label>Agent (registry)</Label>
                 <select
                   className="w-full border rounded-md bg-background p-2 text-sm"
                   value={policyProviderId}
                   onChange={(e) => setPolicyProviderId(e.target.value)}
                 >
-                  <option value="">Select provider</option>
-                  {providers.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.id})</option>)}
+                  <option value="">Select agent</option>
+                  {registryAgents.map((a) => (
+                    <option key={String(a.agentId)} value={String(a.agentId)}>
+                      {String(a.name || a.agentId)} ({String(a.agentId)})
+                    </option>
+                  ))}
                 </select>
+                <p className="text-xs text-muted-foreground">
+                  Creates a merchant/trust policy and assigns it to the selected registry agent.
+                </p>
+                {registryAgents.length === 0 ? (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    No registry agents found. Register an agent first, then assign agent policies.
+                  </p>
+                ) : null}
               </div>
             ) : (
               <div className="space-y-2">
                 <Label>User email</Label>
                 <Input value={policyUserEmail} onChange={(e) => setPolicyUserEmail(e.target.value)} placeholder="user@company.com" />
                 <p className="text-xs text-muted-foreground">
-                  User-based scope is created in policy metadata for demo assignment context.
+                  Assign one of your existing org policies directly to this user.
                 </p>
+                <Label className="mt-2">Existing policy</Label>
+                <select
+                  className="w-full border rounded-md bg-background p-2 text-sm"
+                  value={selectedExistingPolicyId}
+                  onChange={(e) => setSelectedExistingPolicyId(e.target.value)}
+                >
+                  <option value="">Select policy</option>
+                  {policies.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name} ({p.id})</option>
+                  ))}
+                </select>
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              <div className="space-y-2">
-                <Label>Max transaction amount (USDC)</Label>
-                <Input value={policyCap} onChange={(e) => setPolicyCap(e.target.value)} type="number" min="0.001" step="0.001" />
+            {policyMode === "agent" ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div className="space-y-2">
+                  <Label>Max transaction amount (USDC)</Label>
+                  <Input value={policyCap} onChange={(e) => setPolicyCap(e.target.value)} type="number" min="0.001" step="0.001" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Minimum trust score</Label>
+                  <Input value={policyMinTrust} onChange={(e) => setPolicyMinTrust(e.target.value)} type="number" min="0" max="1" step="0.01" />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Fallback action</Label>
+                  <select
+                    className="w-full border rounded-md bg-background p-2 text-sm"
+                    value={policyFallback}
+                    onChange={(e) => setPolicyFallback(e.target.value as any)}
+                  >
+                    <option value="deny">deny</option>
+                    <option value="require_approval">require_approval</option>
+                    <option value="flag_review">flag_review</option>
+                    <option value="approve">approve</option>
+                  </select>
+                </div>
               </div>
+            ) : null}
+
+            {policyMode === "agent" ? (
               <div className="space-y-2">
-                <Label>Fallback action</Label>
-                <select
-                  className="w-full border rounded-md bg-background p-2 text-sm"
-                  value={policyFallback}
-                  onChange={(e) => setPolicyFallback(e.target.value as any)}
-                >
-                  <option value="deny">deny</option>
-                  <option value="require_approval">require_approval</option>
-                  <option value="flag_review">flag_review</option>
-                  <option value="approve">approve</option>
-                </select>
+                <Label>Current assigned agent policies</Label>
+                {currentAgentPolicies.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No policies assigned to this agent yet.</p>
+                ) : (
+                  <div className="max-h-36 overflow-auto rounded-md border border-border/60 divide-y">
+                    {currentAgentPolicies.map((p) => (
+                      <div key={p.id} className="flex items-center justify-between px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium">{p.name}</p>
+                          <p className="truncate text-[11px] text-muted-foreground">{p.id}</p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={() => void removeAssignedAgentPolicy(String(p.id))}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
+            ) : null}
+
+            {policyMode === "user" ? (
+              <div className="space-y-2">
+                <Label>Current assigned policies</Label>
+                {currentUserPolicies.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No policies assigned to this user yet.</p>
+                ) : (
+                  <div className="max-h-36 overflow-auto rounded-md border border-border/60 divide-y">
+                    {currentUserPolicies.map((p) => (
+                      <div key={p.id} className="flex items-center justify-between px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium">{p.name}</p>
+                          <p className="truncate text-[11px] text-muted-foreground">{p.id}</p>
+                        </div>
+                        <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => void removeAssignedPolicy(String(p.id))}>
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPolicyModalOpen(false)}>Cancel</Button>
-            <Button onClick={createScopedPolicyFromModal}>Create Policy</Button>
+            <Button onClick={createScopedPolicyFromModal}>{policyMode === "agent" ? "Create + Assign Agent Policy" : "Assign User Policy"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -974,8 +1196,9 @@ export function X402BuyerHubView() {
                   >
                     <option value="">All sources</option>
                     <option value="x402.direct">x402.direct</option>
-                    <option value="x402scout">x402scout</option>
+                    <option value="x402scout">Bazaar (x402scout)</option>
                     <option value="orthogonal">Orthogonal</option>
+                    <option value="bazaar+orthogonal">Bazaar + Orthogonal</option>
                   </select>
                 </div>
                 <div className="space-y-1.5">
@@ -1011,6 +1234,7 @@ export function X402BuyerHubView() {
             <span className="flex items-center text-[11px] text-muted-foreground">Quick:</span>
             {([
               { label: "Orthogonal", query: "orthogonal web scraper", src: "orthogonal" as const },
+              { label: "Bazaar + Orthogonal", query: "x402 data api", src: "bazaar+orthogonal" as const },
               { label: "Heurist Firecrawl", query: "heurist firecrawl", src: "" as const },
               { label: "Priced data services", query: "x402 data scrape", hp: true },
             ]).map((s) => (
@@ -1048,10 +1272,17 @@ export function X402BuyerHubView() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{svc.name}</p>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">{svc.registerUrl || svc.url}</p>
+                  {svc.description ? (
+                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground/90">{svc.description}</p>
+                  ) : null}
                   <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
                     <span className="rounded-sm border border-border/60 bg-muted px-1.5 py-0.5 text-[10px]">{svc.source || "marketplace"}</span>
                     {svc.category ? <span>{svc.category}</span> : null}
+                    {svc.method ? <span>{String(svc.method).toUpperCase()}</span> : null}
+                    {svc.network ? <span>{svc.network}</span> : null}
                     {svc.priceUsd != null ? <span className="text-foreground/80">${Number(svc.priceUsd).toFixed(4)}</span> : null}
+                    {svc.trustScore != null ? <span>trust {Number(svc.trustScore).toFixed(1)}</span> : null}
+                    {Array.isArray(svc.requiredInputs) && svc.requiredInputs.length > 0 ? <span>req: {svc.requiredInputs.slice(0, 3).join(", ")}</span> : null}
                   </div>
                 </div>
                 <Button
@@ -1059,7 +1290,7 @@ export function X402BuyerHubView() {
                   size="sm"
                   variant="outline"
                   className="h-8 shrink-0"
-                  onClick={() => registerService(svc.registerUrl || svc.url, svc.name, svc.category, svc.source, svc.description)}
+                  onClick={() => registerService(svc.registerUrl || svc.url, svc.name, svc.category, svc.source, svc.description, svc.trustScore)}
                 >
                   Register
                 </Button>
@@ -1086,19 +1317,20 @@ export function X402BuyerHubView() {
           ) : null}
 
           <div className="p-5 space-y-4">
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               <select
                 className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
                 value={selectedProvider}
                 onChange={(e) => {
                   const pid = e.target.value
                   setSelectedProvider(pid)
+                  setPreferredNetwork("")
                   const p = providers.find((x) => x.id === pid)
                   setSelectedAction(p?.actions?.[0] || "request")
                 }}
               >
                 <option value="">Select provider</option>
-                {providers.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.id})</option>)}
+                {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               <select
                 className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
@@ -1107,6 +1339,24 @@ export function X402BuyerHubView() {
               >
                 {(selectedProviderObj?.actions || ["request"]).map((a: string) => <option key={a} value={a}>{a}</option>)}
               </select>
+              <select
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                value={preferredNetwork}
+                onChange={(e) => setPreferredNetwork(e.target.value)}
+                title="Preferred settlement chain"
+              >
+                <option value="">Auto-select chain</option>
+                {selectedProviderAccepts.length > 0
+                  ? selectedProviderAccepts.map((n) => <option key={n} value={n}>{n}</option>)
+                  : (
+                    <>
+                      <option value="eip155:8453">Base (eip155:8453)</option>
+                      <option value="eip155:137">Polygon (eip155:137)</option>
+                      <option value="eip155:42161">Arbitrum (eip155:42161)</option>
+                      <option value="solana:mainnet-beta">Solana</option>
+                    </>
+                  )}
+              </select>
             </div>
             <Input
               className="h-9 text-sm"
@@ -1114,10 +1364,14 @@ export function X402BuyerHubView() {
               onChange={(e) => setRequestInput(e.target.value)}
               placeholder={inputGuide.exampleInput}
             />
-            <div className="rounded-md border border-border/50 bg-muted/20 px-4 py-3 text-xs space-y-1 text-muted-foreground">
-              <p>{inputGuide.title}</p>
-              <p><span className="font-medium text-foreground">Required:</span> {inputGuide.required.length ? inputGuide.required.join(", ") : "—"}</p>
-              <p><span className="font-medium text-foreground">Optional:</span> {inputGuide.optional.length ? inputGuide.optional.join(", ") : "—"}</p>
+            <div className="rounded-md border border-border/50 bg-muted/20 px-4 py-3 text-xs space-y-2 text-muted-foreground">
+              <p className="font-medium text-foreground/90">{inputGuide.title}</p>
+              <p>{inputGuide.serviceSummary}</p>
+              <p><span className="font-medium text-foreground">Endpoint:</span> {inputGuide.endpoint || "—"}</p>
+              <p><span className="font-medium text-foreground">Method / input:</span> {inputGuide.method} · {inputGuide.inputMode}</p>
+              <p><span className="font-medium text-foreground">Required input fields:</span> {inputGuide.required.length ? inputGuide.required.join(", ") : "—"}</p>
+              <p><span className="font-medium text-foreground">Optional input fields:</span> {inputGuide.optional.length ? inputGuide.optional.join(", ") : "—"}</p>
+              <p><span className="font-medium text-foreground">Expected output:</span> {inputGuide.outputSummary.length ? inputGuide.outputSummary.join(" | ") : "Schema not provided by provider"}</p>
             </div>
             <Button
               type="button"
@@ -1125,7 +1379,7 @@ export function X402BuyerHubView() {
               onClick={runExecution}
               disabled={busy || !onboardingReady}
             >
-              {busy ? "Running…" : "Run policy + x402 payment flow"}
+              {busy ? "Executing…" : "Settle x402 payment & fetch response"}
             </Button>
           </div>
           {execTrace.length ? (
@@ -1142,12 +1396,12 @@ export function X402BuyerHubView() {
               </div>
               <div className="grid grid-cols-2 gap-px bg-border/40 border-t border-border/40 sm:grid-cols-3">
                 {[
-                  ["Outcome", paidData?.status || execResult?.phase || "—"],
-                  ["Provider", paidData?.provider || selectedProvider || "—"],
-                  ["Cost", `$${Number(price?.providerCost || 0).toFixed(4)} USDC`],
-                  ["Total", `$${Number(price?.total || 0).toFixed(4)} USDC`],
-                  ["Network", settlement?.network || execResult?.sign?.chainName || "—"],
-                  ["Payment ID", paidData?.paymentId || "—"],
+                  ["Outcome", payResult.status || paidData?.status || execResult?.phase || "—"],
+                  ["Provider", payResult.provider || paidData?.provider || selectedProvider || "—"],
+                  ["Chain", payResult.chainName || settlement?.network || execResult?.sign?.chainName || "—"],
+                  ["Price", payResult.priceUsdc != null ? `$${Number(payResult.priceUsdc).toFixed(6)} USDC` : price?.total != null ? `$${Number(price.total).toFixed(4)} USDC` : "—"],
+                  ["Pay-to", payResult.payTo ? `${String(payResult.payTo).slice(0, 8)}…${String(payResult.payTo).slice(-6)}` : "—"],
+                  ["Payment ID", payResult.paymentId || paidData?.paymentId || "—"],
                 ].map(([k, v]) => (
                   <div key={k} className="bg-card px-4 py-3">
                     <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{k}</p>
@@ -1195,7 +1449,7 @@ export function X402BuyerHubView() {
                   ) : responseTab === "content" ? (
                     <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80 whitespace-pre-wrap">{cleanedContent}</div>
                   ) : (
-                    <pre className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80">{JSON.stringify(paidData?.serviceResult?.raw || paidData?.data || {}, null, 2)}</pre>
+                    <pre className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80">{JSON.stringify(providerResponse || paidData?.serviceResult?.raw || paidData?.data || {}, null, 2)}</pre>
                   )}
                 </div>
               ) : null}

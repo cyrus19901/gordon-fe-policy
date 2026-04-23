@@ -5,6 +5,24 @@ import crypto from 'crypto';
 const BYPASS_OTP = process.env.BYPASS_OTP === 'true';
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
+async function ensureBackendUser(email: string) {
+  const namePart = email.split('@')[0] || 'User';
+  const userName = namePart.charAt(0).toUpperCase() + namePart.slice(1).replace(/[._-]/g, ' ');
+
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/auth/create-user`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, name: userName }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => ({}));
+    return data?.user || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -76,7 +94,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: verifyData.error || 'Invalid verification code' }, { status: 400 });
     }
 
-    const user = verifyData.user;
+    // Ensure first login always has a backend user record + wallet bootstrap.
+    const verifiedUser = verifyData.user;
+    const provisionedUser = await ensureBackendUser(normalizedEmail);
+    const user = provisionedUser || verifiedUser || {
+      id: crypto.createHash('sha256').update(normalizedEmail).digest('hex').substring(0, 16),
+      email: normalizedEmail,
+    };
 
     // Create session cookie
     const cookieStore = await cookies();
