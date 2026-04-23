@@ -266,6 +266,13 @@ export function X402BuyerHubView() {
     () => providers.find((p) => p.id === selectedProvider),
     [providers, selectedProvider],
   )
+  const registeredProviderEndpoints = useMemo(() => {
+    return new Set(
+      providers
+        .map((p) => String(p?.endpoint || "").trim().toLowerCase())
+        .filter(Boolean),
+    )
+  }, [providers])
   const inputGuide = useMemo(() => deriveServiceInputGuide(selectedProviderObj), [selectedProviderObj])
 
   const chainShowcase = useMemo(() => {
@@ -662,8 +669,8 @@ export function X402BuyerHubView() {
 
   async function removeAssignedAgentPolicy(policyId: string) {
     try {
-      await proxyFetch(`/v1/policies/${policyId}/toggle`, {
-        method: "POST",
+      await proxyFetch(`/v1/policies/${policyId}`, {
+        method: "PUT",
         body: JSON.stringify({ enabled: false }),
       })
       toast.success("Provider policy disabled")
@@ -1277,6 +1284,8 @@ export function X402BuyerHubView() {
               >
                 {(() => {
                   const listedPriceLabel = formatMarketplacePrice(svc)
+                  const registerTarget = String(svc.registerUrl || svc.url || "").trim().toLowerCase()
+                  const alreadyRegistered = registerTarget ? registeredProviderEndpoints.has(registerTarget) : false
                   return (
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{svc.name}</p>
@@ -1290,6 +1299,7 @@ export function X402BuyerHubView() {
                     {svc.method ? <span>{String(svc.method).toUpperCase()}</span> : null}
                     {svc.network ? <span>{svc.network}</span> : null}
                     {listedPriceLabel ? <span className="text-foreground/80">{listedPriceLabel}</span> : null}
+                    {alreadyRegistered ? <span className="rounded-sm border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-400">registered</span> : null}
                     {svc.trustScore != null ? <span>trust {Number(svc.trustScore).toFixed(1)}</span> : null}
                     {Array.isArray(svc.requiredInputs) && svc.requiredInputs.length > 0 ? <span>req: {svc.requiredInputs.slice(0, 3).join(", ")}</span> : null}
                   </div>
@@ -1301,9 +1311,10 @@ export function X402BuyerHubView() {
                   size="sm"
                   variant="outline"
                   className="h-8 shrink-0"
+                  disabled={registeredProviderEndpoints.has(String(svc.registerUrl || svc.url || "").trim().toLowerCase())}
                   onClick={() => registerService(svc.registerUrl || svc.url, svc.name, svc.category, svc.source, svc.description, svc.trustScore)}
                 >
-                  Register
+                  {registeredProviderEndpoints.has(String(svc.registerUrl || svc.url || "").trim().toLowerCase()) ? "Registered" : "Register"}
                 </Button>
               </div>
             ))}
