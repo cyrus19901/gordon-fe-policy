@@ -103,6 +103,17 @@ function chainAvatarLetter(name: string): string {
   return (alnum[0] || n[0] || "?").toUpperCase()
 }
 
+function formatMarketplacePrice(svc: AnyObj): string {
+  const usd = Number(svc?.priceUsd)
+  if (Number.isFinite(usd) && usd > 0) return `$${usd.toFixed(4)}`
+
+  const rawPrice = String(svc?.price ?? "").trim()
+  if (!rawPrice) return ""
+  const numeric = Number(rawPrice.replace(/[^0-9.]/g, ""))
+  if (Number.isFinite(numeric)) return `$${numeric.toFixed(4)}`
+  return rawPrice
+}
+
 function deriveServiceInputGuide(provider?: AnyObj): {
   title: string
   serviceSummary: string
@@ -752,6 +763,18 @@ export function X402BuyerHubView() {
     ""
   const cleanedContent = cleanResponseText(processedContent)
   const summaryBullets = toSummaryBullets(cleanedContent)
+  const hasProviderResponse = Boolean(
+    providerResponse &&
+    typeof providerResponse === "object" &&
+    Object.keys(providerResponse).length > 0,
+  )
+  const fallbackSummaryBullets = hasProviderResponse
+    ? Object.entries(providerResponse)
+      .slice(0, 6)
+      .map(([k, v]) => `${k}: ${typeof v === "object" ? "[object]" : String(v).slice(0, 140)}`)
+    : []
+  const displaySummaryBullets = summaryBullets.length > 0 ? summaryBullets : fallbackSummaryBullets
+  const displayContent = cleanedContent || (hasProviderResponse ? JSON.stringify(providerResponse, null, 2) : "")
   const sourceUrl =
     providerResponse?.result?.data?.url ||
     paidData?.data?.result?.data?.url ||
@@ -1269,6 +1292,9 @@ export function X402BuyerHubView() {
                 key={`${svc.url}-${idx}`}
                 className="flex items-center justify-between gap-3 border-b border-border/40 px-5 py-3.5 last:border-0 hover:bg-muted/30 transition-colors"
               >
+                {(() => {
+                  const listedPriceLabel = formatMarketplacePrice(svc)
+                  return (
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{svc.name}</p>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">{svc.registerUrl || svc.url}</p>
@@ -1280,11 +1306,13 @@ export function X402BuyerHubView() {
                     {svc.category ? <span>{svc.category}</span> : null}
                     {svc.method ? <span>{String(svc.method).toUpperCase()}</span> : null}
                     {svc.network ? <span>{svc.network}</span> : null}
-                    {svc.priceUsd != null ? <span className="text-foreground/80">${Number(svc.priceUsd).toFixed(4)}</span> : null}
+                    {listedPriceLabel ? <span className="text-foreground/80">{listedPriceLabel}</span> : null}
                     {svc.trustScore != null ? <span>trust {Number(svc.trustScore).toFixed(1)}</span> : null}
                     {Array.isArray(svc.requiredInputs) && svc.requiredInputs.length > 0 ? <span>req: {svc.requiredInputs.slice(0, 3).join(", ")}</span> : null}
                   </div>
                 </div>
+                  )
+                })()}
                 <Button
                   type="button"
                   size="sm"
@@ -1419,15 +1447,15 @@ export function X402BuyerHubView() {
                 </div>
               ) : null}
 
-              {processedContent ? (
+              {(processedContent || hasProviderResponse) ? (
                 <div className="border-t border-border/40 px-5 py-4 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-xs font-medium">Service response</p>
                     <div className="flex gap-2">
-                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => navigator.clipboard.writeText(summaryBullets.join("\n"))}>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => navigator.clipboard.writeText(displaySummaryBullets.join("\n"))}>
                         Copy summary
                       </Button>
-                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => navigator.clipboard.writeText(cleanedContent)}>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => navigator.clipboard.writeText(displayContent)}>
                         Copy full
                       </Button>
                     </div>
@@ -1441,13 +1469,17 @@ export function X402BuyerHubView() {
                   </div>
                   {responseTab === "summary" ? (
                     <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80">
-                      <ul className="list-disc pl-4 space-y-1">
-                        {summaryBullets.map((b, i) => <li key={i}>{b}</li>)}
-                      </ul>
+                      {displaySummaryBullets.length > 0 ? (
+                        <ul className="list-disc pl-4 space-y-1">
+                          {displaySummaryBullets.map((b, i) => <li key={i}>{b}</li>)}
+                        </ul>
+                      ) : (
+                        <p className="text-muted-foreground">No summary extracted. Check the Content or Raw tab.</p>
+                      )}
                       {sourceUrl ? <p className="mt-3 text-muted-foreground">Source: <a className="underline underline-offset-2" href={sourceUrl} target="_blank" rel="noreferrer">{sourceUrl}</a></p> : null}
                     </div>
                   ) : responseTab === "content" ? (
-                    <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80 whitespace-pre-wrap">{cleanedContent}</div>
+                    <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80 whitespace-pre-wrap">{displayContent}</div>
                   ) : (
                     <pre className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80">{JSON.stringify(providerResponse || paidData?.serviceResult?.raw || paidData?.data || {}, null, 2)}</pre>
                   )}
