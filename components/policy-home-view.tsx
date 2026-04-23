@@ -382,6 +382,12 @@ export function PolicyHomeView({ onNavigate }: PolicyHomeViewProps) {
       title: "Agent permissions",
       description: "Manage which agents can initiate transactions",
     },
+    {
+      id: "buyer-hub",
+      icon: Bot,
+      title: "Buyer x402 Hub",
+      description: "Create backend API keys, wallets, and run usage-based services",
+    },
   ]
 
   return (

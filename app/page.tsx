@@ -5,7 +5,7 @@ import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
 import { Button } from "@/components/ui/button"
-import { Plus, Search, X, Bookmark, List, Inbox } from "lucide-react"
+import { Plus, Search, X, Bookmark, List, Inbox, Wallet } from "lucide-react"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { AppHeader } from "@/components/app-header"
 import Image from "next/image"
@@ -38,6 +38,7 @@ import { ThemeToggle } from "@/components/theme-toggle"
 import { InvoicesView } from "@/components/invoices-view"
 import { CampaignsViewPage } from "@/components/campaigns-view-page"
 import { ConversationalResultsView } from "@/components/conversational-results-view"
+import { X402BuyerHubView } from "@/components/x402-buyer-hub-view"
 
 // Mock activity feed data - replace with actual data fetching
 const activityFeedData = [
@@ -66,7 +67,7 @@ function HomePageContent() {
   const [isNewCampaignFlow, setIsNewCampaignFlow] = useState(false)
   const [deals, setDeals] = useState(initialDeals)
   const [activeTab, setActiveTab] = useState<
-    "your-deals" | "find-deals" | "saved-queries" | "inbox" | "settings" | "watchlist" | "campaigns"
+    "your-deals" | "find-deals" | "saved-queries" | "inbox" | "settings" | "watchlist" | "campaigns" | "buyer-hub"
   >("your-deals")
   const [savedDealsActiveView, setSavedDealsActiveView] = useState<"watchlist" | "campaigns" | "inbox">("watchlist")
   const [selectedMarketDeal, setSelectedMarketDeal] = useState<any>(null)
@@ -508,6 +509,9 @@ function HomePageContent() {
       case "campaigns":
         setActiveTab("campaigns")
         break
+      case "buyer-hub":
+        setActiveTab("buyer-hub")
+        break
       default:
         setActiveTab("your-deals")
     }
@@ -529,6 +533,8 @@ const getHeaderTitle = () => {
   return "Settings"
   case "campaigns":
   return "Integrations"
+  case "buyer-hub":
+  return "Buyer x402 Hub"
       default:
         return "Policy"
     }
@@ -550,6 +556,8 @@ const getHeaderDescription = () => {
   return "Configure your preferences"
   case "campaigns":
   return "Connect payment providers and tools"
+  case "buyer-hub":
+  return "Create backend API keys, configure wallet addresses, and execute usage-based x402 services"
       default:
         return "Manage agent spend policies and controls"
     }
@@ -707,6 +715,18 @@ const getHeaderDescription = () => {
                 </h1>
               </div>
               <div className="flex items-center space-x-4">
+                <Button
+                  variant={activeTab === "buyer-hub" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => {
+                    setCurrentSection("buyer-hub")
+                    setActiveTab("buyer-hub")
+                  }}
+                  className="flex items-center gap-2"
+                >
+                  <Wallet className="h-4 w-4" />
+                  <span className="hidden sm:inline">Buyer Hub</span>
+                </Button>
                 {activeTab === "find-deals" && (
                   <Button
                     variant="outline"
@@ -883,6 +903,18 @@ const getHeaderDescription = () => {
                         </div>
                       </CardContent>
                     </Card>
+                  </motion.div>
+                )}
+
+                {activeTab === "buyer-hub" && (
+                  <motion.div
+                    key="buyer-hub-view"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+                  >
+                    <X402BuyerHubView />
                   </motion.div>
                 )}
               </AnimatePresence>
