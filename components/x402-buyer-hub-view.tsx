@@ -231,7 +231,6 @@ export function X402BuyerHubView() {
   const [treasury, setTreasury] = useState<AnyObj>({})
   const [keys, setKeys] = useState<AnyObj[]>([])
   const [providers, setProviders] = useState<AnyObj[]>([])
-  const [registryAgents, setRegistryAgents] = useState<AnyObj[]>([])
   const [policies, setPolicies] = useState<AnyObj[]>([])
   const [mkQuery, setMkQuery] = useState("firecrawl")
   /** Discovery filters — passed to GET /v1/marketplace/browse */
@@ -315,7 +314,7 @@ export function X402BuyerHubView() {
   async function loadAll() {
     if (!apiKey) return
     try {
-      const [wallet, chainsJson, treasuryRes, providersRes, keysRes, policiesRes, registryAgentsRes] = await Promise.all([
+      const [wallet, chainsJson, treasuryRes, providersRes, keysRes, policiesRes] = await Promise.all([
         fetch("/api/proxy/demo/wallet", {
           headers: { "X-API-Key": apiKey },
           credentials: "include",
@@ -328,7 +327,6 @@ export function X402BuyerHubView() {
         proxyFetch("/v1/providers?include_disabled=true"),
         proxyFetch("/v1/orgs/me/api-keys"),
         proxyFetch("/v1/policies"),
-        proxyFetch("/registry/agents").catch(() => ({ agents: [] })),
       ])
       setWalletInfo(wallet || {})
       if (Array.isArray(chainsJson?.chains) && chainsJson.chains.length) {
@@ -337,7 +335,6 @@ export function X402BuyerHubView() {
       setTreasury(treasuryRes || {})
       const pureProviders = (providersRes?.providers || []).filter(isPureX402Provider)
       setProviders(pureProviders)
-      setRegistryAgents(Array.isArray(registryAgentsRes?.agents) ? registryAgentsRes.agents : [])
       setKeys(keysRes?.keys || [])
       setPolicies(policiesRes?.policies || [])
       if (!selectedProvider && pureProviders.length) {
@@ -495,14 +492,14 @@ export function X402BuyerHubView() {
       const cap = Number(policyCap || 0)
       const minTrust = Number(policyMinTrust || 0)
       if (!Number.isFinite(cap) || cap <= 0) throw new Error("Policy cap must be > 0")
-      if (policyMode === "agent" && !policyProviderId) throw new Error("Select an agent")
+      if (policyMode === "agent" && !policyProviderId) throw new Error("Select a provider")
       if (policyMode === "user" && !policyUserEmail.trim()) throw new Error("Enter user email")
 
       const timestamp = new Date().toISOString().slice(0, 10)
       const isAgent = policyMode === "agent"
       const policyBody = isAgent
         ? {
-            name: `Agent Guard: ${policyProviderId} (${timestamp})`,
+            name: `Provider Guard: ${policyProviderId} (${timestamp})`,
             type: "merchant",
             enabled: true,
             priority: 96,
@@ -528,15 +525,7 @@ export function X402BuyerHubView() {
           "",
         )
         if (!createdPolicyId) throw new Error("Failed to resolve created policy id")
-        await proxyFetch("/agents/policies/assign", {
-          method: "POST",
-          body: JSON.stringify({
-            agent_id: policyProviderId,
-            policy_id: createdPolicyId,
-          }),
-        })
-        toast.success("Agent policy created and assigned")
-        await loadCurrentAgentPolicies(policyProviderId)
+        toast.success("Provider policy created")
       } else {
         if (!selectedExistingPolicyId) throw new Error("Select an existing policy to assign")
         if (!currentUser?.id) throw new Error("Current user not resolved from session")
@@ -617,10 +606,10 @@ export function X402BuyerHubView() {
   }, [])
 
   useEffect(() => {
-    if (!policyProviderId && registryAgents.length > 0) {
-      setPolicyProviderId(String(registryAgents[0]?.agentId || ""))
+    if (!policyProviderId && providers.length > 0) {
+      setPolicyProviderId(String(providers[0]?.id || ""))
     }
-  }, [registryAgents, policyProviderId])
+  }, [providers, policyProviderId])
 
   useEffect(() => {
     if (!policyUserEmail && currentUser?.email) {
@@ -658,35 +647,29 @@ export function X402BuyerHubView() {
     }
   }
 
-  async function loadCurrentAgentPolicies(agentId?: string) {
-    if (!apiKey) return
-    const selectedAgentId = String(agentId || policyProviderId || "")
-    if (!selectedAgentId) {
+  async function loadCurrentAgentPolicies(providerId?: string) {
+    const selectedProviderId = String(providerId || policyProviderId || "")
+    if (!selectedProviderId) {
       setCurrentAgentPolicies([])
       return
     }
-    try {
-      const data = await proxyFetch(`/agents/policies?agent_id=${encodeURIComponent(selectedAgentId)}`)
-      setCurrentAgentPolicies(Array.isArray(data?.policies) ? data.policies : [])
-    } catch {
-      setCurrentAgentPolicies([])
-    }
+    const matched = (policies || []).filter((p: AnyObj) => {
+      const merchants = p?.rules?.allowedMerchants
+      return Array.isArray(merchants) && merchants.includes(selectedProviderId)
+    })
+    setCurrentAgentPolicies(matched)
   }
 
   async function removeAssignedAgentPolicy(policyId: string) {
-    if (!policyProviderId) return
     try {
-      await proxyFetch("/agents/policies/assign", {
-        method: "DELETE",
-        body: JSON.stringify({
-          agent_id: policyProviderId,
-          policy_id: policyId,
-        }),
+      await proxyFetch(`/v1/policies/${policyId}/toggle`, {
+        method: "POST",
+        body: JSON.stringify({ enabled: false }),
       })
-      toast.success("Policy removed from agent")
-      await loadCurrentAgentPolicies(policyProviderId)
+      toast.success("Provider policy disabled")
+      await loadAll()
     } catch (err: any) {
-      toast.error(`Failed to remove agent policy: ${err.message}`)
+      toast.error(`Failed to disable provider policy: ${err.message}`)
     }
   }
 
@@ -725,7 +708,7 @@ export function X402BuyerHubView() {
   useEffect(() => {
     void loadCurrentAgentPolicies(policyProviderId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey, policyProviderId])
+  }, [policyProviderId, policies])
 
   useEffect(() => {
     if (!selectedProviderObj) return
@@ -1034,13 +1017,13 @@ export function X402BuyerHubView() {
           <DialogHeader>
             <DialogTitle>Assign Policy Scope</DialogTitle>
             <DialogDescription>
-              Agent policies are assigned to registered registry agents. User policies are assigned directly to the logged-in user.
+              Provider policies are scoped to registered providers. User policies are assigned directly to the logged-in user.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <div className="flex gap-2">
               <Button type="button" variant={policyMode === "agent" ? "default" : "outline"} onClick={() => setPolicyMode("agent")}>
-                Agent policy
+                Provider policy
               </Button>
               <Button type="button" variant={policyMode === "user" ? "default" : "outline"} onClick={() => setPolicyMode("user")}>
                 User policy
@@ -1049,25 +1032,25 @@ export function X402BuyerHubView() {
 
             {policyMode === "agent" ? (
               <div className="space-y-2">
-                <Label>Agent (registry)</Label>
+                <Label>Provider</Label>
                 <select
                   className="w-full border rounded-md bg-background p-2 text-sm"
                   value={policyProviderId}
                   onChange={(e) => setPolicyProviderId(e.target.value)}
                 >
-                  <option value="">Select agent</option>
-                  {registryAgents.map((a) => (
-                    <option key={String(a.agentId)} value={String(a.agentId)}>
-                      {String(a.name || a.agentId)} ({String(a.agentId)})
+                  <option value="">Select provider</option>
+                  {providers.map((p) => (
+                    <option key={String(p.id)} value={String(p.id)}>
+                      {String(p.name || p.id)} ({String(p.id)})
                     </option>
                   ))}
                 </select>
                 <p className="text-xs text-muted-foreground">
-                  Creates a merchant/trust policy and assigns it to the selected registry agent.
+                  Creates a merchant/trust policy scoped to this provider.
                 </p>
-                {registryAgents.length === 0 ? (
+                {providers.length === 0 ? (
                   <p className="text-xs text-amber-600 dark:text-amber-400">
-                    No registry agents found. Register an agent first, then assign agent policies.
+                    No providers found. Register a provider first, then set provider policies.
                   </p>
                 ) : null}
               </div>
@@ -1120,9 +1103,9 @@ export function X402BuyerHubView() {
 
             {policyMode === "agent" ? (
               <div className="space-y-2">
-                <Label>Current assigned agent policies</Label>
+                <Label>Current provider policies</Label>
                 {currentAgentPolicies.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No policies assigned to this agent yet.</p>
+                  <p className="text-xs text-muted-foreground">No policies scoped to this provider yet.</p>
                 ) : (
                   <div className="max-h-36 overflow-auto rounded-md border border-border/60 divide-y">
                     {currentAgentPolicies.map((p) => (
@@ -1138,7 +1121,7 @@ export function X402BuyerHubView() {
                           className="h-7 text-xs"
                           onClick={() => void removeAssignedAgentPolicy(String(p.id))}
                         >
-                          Remove
+                          Disable
                         </Button>
                       </div>
                     ))}
@@ -1172,7 +1155,7 @@ export function X402BuyerHubView() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPolicyModalOpen(false)}>Cancel</Button>
-            <Button onClick={createScopedPolicyFromModal}>{policyMode === "agent" ? "Create + Assign Agent Policy" : "Assign User Policy"}</Button>
+            <Button onClick={createScopedPolicyFromModal}>{policyMode === "agent" ? "Create Provider Policy" : "Assign User Policy"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
