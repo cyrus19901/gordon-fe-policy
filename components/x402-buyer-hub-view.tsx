@@ -325,7 +325,7 @@ export function X402BuyerHubView() {
     try {
       await proxyFetch("/v1/marketplace/register", {
         method: "POST",
-        body: JSON.stringify({ url, name, category, source, description }),
+        body: JSON.stringify({ url, name, category, source, description, require_strict: false }),
       })
       toast.success("Service registered")
       await loadAll()
