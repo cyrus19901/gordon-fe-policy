@@ -3,6 +3,16 @@ import { cookies } from 'next/headers';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
+function getBackendCandidates(): string[] {
+  return Array.from(
+    new Set(
+      [BACKEND_URL, process.env.BACKEND_FALLBACK_URL, 'http://localhost:3001']
+        .filter(Boolean)
+        .map((u) => String(u).replace(/\/+$/, '')),
+    ),
+  );
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { path: string[] } }
@@ -60,7 +70,7 @@ async function handleRequest(
       searchParams.set('user_email', userEmail);
     }
     
-    const backendUrl = `${BACKEND_URL}${backendPath}${searchParams.toString() ? '?' + searchParams.toString() : ''}`;
+    const backendCandidates = getBackendCandidates();
 
     // Prepare request body for POST/PUT
     let body = null;
@@ -80,7 +90,7 @@ async function handleRequest(
       }
     }
     
-    // Build headers - forward Authorization from client if present
+    // Build headers - forward relevant auth/payment headers from client
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -89,29 +99,67 @@ async function handleRequest(
     if (authHeader && authHeader.replace('Bearer ', '').startsWith('eyJ')) {
       headers['Authorization'] = authHeader;
     }
-
-    // Forward request to backend
-    const response = await fetch(backendUrl, {
-      method,
-      headers,
-      body,
-    });
-
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      const text = await response.text();
-      console.error(`Proxy: backend returned non-JSON for ${backendPath}:`, text.slice(0, 200));
-      return NextResponse.json(
-        { error: `Backend route not found: ${backendPath}`, status: response.status },
-        { status: response.status === 404 ? 404 : 502 }
-      );
+    const apiKey = request.headers.get('x-api-key');
+    if (apiKey) {
+      headers['X-API-Key'] = apiKey;
+    }
+    const paymentSig = request.headers.get('payment-signature');
+    if (paymentSig) {
+      headers['PAYMENT-SIGNATURE'] = paymentSig;
     }
 
-    const data = await response.json();
+    let lastError: { status: number; message: string; backendUrl?: string } | null = null;
 
-    return NextResponse.json(data, {
-      status: response.status,
-    });
+    for (const backendBase of backendCandidates) {
+      const backendUrl = `${backendBase}${backendPath}${searchParams.toString() ? '?' + searchParams.toString() : ''}`;
+      const response = await fetch(backendUrl, {
+        method,
+        headers,
+        body,
+      }).catch((error: any) => ({ ok: false, status: 0, _err: error } as any));
+
+      if ((response as any)._err) {
+        lastError = {
+          status: 0,
+          message: (response as any)._err?.message || 'Proxy request failed',
+          backendUrl: backendBase,
+        };
+        continue;
+      }
+
+      const contentType = (response as Response).headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const text = await (response as Response).text();
+        console.error(`Proxy: backend returned non-JSON for ${backendPath} from ${backendBase}:`, text.slice(0, 200));
+        lastError = {
+          status: (response as Response).status,
+          message: `Backend route not found: ${backendPath}`,
+          backendUrl: backendBase,
+        };
+        if ((response as Response).status === 404) continue;
+        return NextResponse.json(
+          { error: lastError.message, status: (response as Response).status, backendUrl: backendBase },
+          { status: (response as Response).status >= 500 ? (response as Response).status : 502 },
+        );
+      }
+
+      const data = await (response as Response).json();
+      if ((response as Response).status === 404) {
+        lastError = { status: 404, message: data?.error || `Backend route not found: ${backendPath}`, backendUrl: backendBase };
+        continue;
+      }
+
+      return NextResponse.json(data, { status: (response as Response).status });
+    }
+
+    return NextResponse.json(
+      {
+        error: lastError?.message || `Backend route not found: ${backendPath}`,
+        status: lastError?.status || 404,
+        backendUrl: lastError?.backendUrl || BACKEND_URL,
+      },
+      { status: lastError?.status === 404 ? 404 : 502 },
+    );
   } catch (error: any) {
     console.error('Proxy error:', error);
     return NextResponse.json(
