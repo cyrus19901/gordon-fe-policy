@@ -114,6 +114,46 @@ function formatMarketplacePrice(svc: AnyObj): string {
   return rawPrice
 }
 
+function buildMarketplaceProbeSampleBody(svc: AnyObj): AnyObj | undefined {
+  const endpoint = String(svc?.registerUrl || svc?.url || "").toLowerCase()
+  const required = new Set<string>(
+    (Array.isArray(svc?.requiredInputs) ? svc.requiredInputs : [])
+      .map((x: any) => String(x || "").trim())
+      .filter(Boolean),
+  )
+
+  // Known Orthogonal endpoint that requires concrete body fields to avoid 400 on probe.
+  if (endpoint.includes("/influencers-club/public/v1/discovery/creators/similar/")) {
+    return {
+      platform: "instagram",
+      filter_key: "username",
+      filter_value: "nike",
+      paging: { skip: 0, limit: 1, page: 1 },
+    }
+  }
+
+  if (required.size === 0) return undefined
+
+  const body: AnyObj = {}
+  const put = (k: string, v: any) => {
+    if (required.has(k)) body[k] = v
+  }
+  put("url", "https://example.com")
+  put("query", "example query")
+  put("prompt", "hello")
+  put("domain", "example.com")
+  put("input", "https://example.com")
+  put("platform", "instagram")
+  put("handle", "nike")
+  put("filter_key", "username")
+  put("filter_value", "nike")
+  put("paging", { skip: 0, limit: 1, page: 1 })
+  put("creators", ["nike", "adidas"])
+  put("email", "demo@example.com")
+
+  return Object.keys(body).length > 0 ? body : undefined
+}
+
 function deriveServiceInputGuide(provider?: AnyObj): {
   title: string
   serviceSummary: string
@@ -221,6 +261,102 @@ function cleanResponseText(text: string): string {
     .trim()
 }
 
+function tryParseJsonString(value: string): AnyObj | null {
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === "object" ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function collectLeafHighlights(input: unknown, maxItems = 14): string[] {
+  const out: string[] = []
+  const walk = (value: unknown, path: string) => {
+    if (out.length >= maxItems) return
+    if (value == null) {
+      out.push(`${path}: null`)
+      return
+    }
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      out.push(`${path}: ${String(value).slice(0, 180)}`)
+      return
+    }
+    if (Array.isArray(value)) {
+      if (value.length === 0) out.push(`${path}: []`)
+      value.slice(0, 3).forEach((item, i) => walk(item, `${path}[${i}]`))
+      return
+    }
+    if (typeof value === "object") {
+      const entries = Object.entries(value as Record<string, unknown>)
+      if (entries.length === 0) {
+        out.push(`${path}: {}`)
+        return
+      }
+      for (const [k, v] of entries.slice(0, 6)) {
+        walk(v, path ? `${path}.${k}` : k)
+        if (out.length >= maxItems) break
+      }
+    }
+  }
+  walk(input, "")
+  return out.map((line) => line.replace(/^\./, ""))
+}
+
+function collectCandidateContent(value: unknown, out: string[]) {
+  if (value == null || out.length >= 24) return
+  if (typeof value === "string") {
+    const t = value.trim()
+    if (t.length >= 12) out.push(t)
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 10)) {
+      collectCandidateContent(item, out)
+      if (out.length >= 24) return
+    }
+    return
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>
+    const priorityKeys = [
+      "processed_content",
+      "markdown",
+      "text",
+      "content",
+      "summary",
+      "description",
+      "answer",
+      "output",
+      "result",
+      "data",
+      "message",
+    ]
+    for (const k of priorityKeys) {
+      if (k in obj) collectCandidateContent(obj[k], out)
+      if (out.length >= 24) return
+    }
+    for (const [k, v] of Object.entries(obj).slice(0, 12)) {
+      if (priorityKeys.includes(k)) continue
+      collectCandidateContent(v, out)
+      if (out.length >= 24) return
+    }
+  }
+}
+
+function deriveBestContent(payloads: unknown[]): string {
+  const candidates: string[] = []
+  for (const p of payloads) {
+    collectCandidateContent(p, candidates)
+    if (candidates.length >= 24) break
+  }
+  const normalized = candidates
+    .map((x) => cleanResponseText(x))
+    .filter(Boolean)
+    .filter((x, i, arr) => arr.findIndex((y) => y.slice(0, 140) === x.slice(0, 140)) === i)
+  return normalized.slice(0, 8).join("\n\n---\n\n")
+}
+
 export function X402BuyerHubView() {
   const router = useRouter()
   const [apiKey, setApiKey] = useState("")
@@ -240,6 +376,8 @@ export function X402BuyerHubView() {
   const [mkHasPrice, setMkHasPrice] = useState(false)
   const [marketRows, setMarketRows] = useState<AnyObj[]>([])
   const [marketSources, setMarketSources] = useState<AnyObj>({})
+  const [probeByUrl, setProbeByUrl] = useState<Record<string, AnyObj>>({})
+  const [validatingOrthogonal, setValidatingOrthogonal] = useState(false)
   const [selectedProvider, setSelectedProvider] = useState("")
   const [selectedAction, setSelectedAction] = useState("request")
   const [preferredNetwork, setPreferredNetwork] = useState("")
@@ -250,7 +388,7 @@ export function X402BuyerHubView() {
   const [currentUser, setCurrentUser] = useState<AnyObj | null>(null)
   const [checkingUser, setCheckingUser] = useState(true)
   const [showRawOutput, setShowRawOutput] = useState(false)
-  const [responseTab, setResponseTab] = useState<"summary" | "content" | "raw">("summary")
+  const [responseTab, setResponseTab] = useState<"summary" | "structured" | "content" | "raw">("summary")
   const [policyModalOpen, setPolicyModalOpen] = useState(false)
   const [policyMode, setPolicyMode] = useState<"agent" | "user">("agent")
   const [policyProviderId, setPolicyProviderId] = useState("")
@@ -385,12 +523,23 @@ export function X402BuyerHubView() {
     }
   }
 
-  async function registerService(url: string, name: string, category = "utility", source = "marketplace", description = "", trustScore?: number | null) {
+  async function registerService(
+    url: string,
+    name: string,
+    category = "utility",
+    source = "marketplace",
+    description = "",
+    trustScore?: number | null,
+    method?: string,
+    sampleBody?: AnyObj,
+  ) {
     try {
       const data = await proxyFetch("/v1/marketplace/register", {
         method: "POST",
         body: JSON.stringify({
           url, name, category, source, description, require_strict: false,
+          ...(method ? { method: String(method).toUpperCase() } : {}),
+          ...(sampleBody ? { sample_body: sampleBody } : {}),
           ...(trustScore != null && Number.isFinite(Number(trustScore)) ? { trust_score: Number(trustScore) } : {}),
         }),
       })
@@ -404,6 +553,49 @@ export function X402BuyerHubView() {
       if (mkQuery.trim()) await browseMarketplace()
     } catch (err: any) {
       toast.error(`Register failed: ${err.message}`)
+    }
+  }
+
+  async function validateOrthogonalResults() {
+    const orthRows = marketRows.filter((svc) => String(svc?.source || "").toLowerCase() === "orthogonal")
+    if (orthRows.length === 0) {
+      toast.error("No Orthogonal rows in current results. Search with source=Orthogonal first.")
+      return
+    }
+    setValidatingOrthogonal(true)
+    const next: Record<string, AnyObj> = {}
+    try {
+      for (const svc of orthRows) {
+        const targetUrl = String(svc?.registerUrl || svc?.url || "")
+        if (!targetUrl) continue
+        const method = String(svc?.method || "GET").toUpperCase()
+        const sampleBody = buildMarketplaceProbeSampleBody(svc)
+        try {
+          const params = new URLSearchParams()
+          params.set("url", targetUrl)
+          params.set("method", method)
+          if (sampleBody) params.set("sample_body", JSON.stringify(sampleBody))
+          const probe = await proxyFetch(`/v1/marketplace/probe?${params.toString()}`)
+          next[targetUrl.toLowerCase()] = {
+            compatible: Boolean(probe?.x402Compatible),
+            status: probe?.status ?? "n/a",
+            priceUsdc: probe?.priceUsdc ?? null,
+            network: probe?.network ?? "",
+            errorType: probe?.errorType ?? null,
+          }
+        } catch (err: any) {
+          next[targetUrl.toLowerCase()] = {
+            compatible: false,
+            status: "error",
+            error: err.message,
+          }
+        }
+        setProbeByUrl((prev) => ({ ...prev, ...next }))
+      }
+      const okCount = Object.values(next).filter((v: any) => v.compatible).length
+      toast.success(`Orthogonal validation complete: ${okCount}/${orthRows.length} x402-ready`)
+    } finally {
+      setValidatingOrthogonal(false)
     }
   }
 
@@ -670,13 +862,13 @@ export function X402BuyerHubView() {
   async function removeAssignedAgentPolicy(policyId: string) {
     try {
       await proxyFetch(`/v1/policies/${policyId}`, {
-        method: "PUT",
-        body: JSON.stringify({ enabled: false }),
+        method: "DELETE",
+        body: JSON.stringify({}),
       })
-      toast.success("Provider policy disabled")
+      toast.success("Provider policy deleted")
       await loadAll()
     } catch (err: any) {
-      toast.error(`Failed to disable provider policy: ${err.message}`)
+      toast.error(`Failed to delete provider policy: ${err.message}`)
     }
   }
 
@@ -739,32 +931,38 @@ export function X402BuyerHubView() {
   const settlement = paidData?.x402Settlement || {}
   const price = paidData?.priceBreakdown || execResult?.quote?.priceBreakdown || {}
 
-  // For /payments/pay the response data is under paidData.data
-  const providerResponse: AnyObj = payCompleted
-    ? (typeof paidData.data === "object" && paidData.data !== null ? paidData.data : {})
-    : {}
+  // For /payments/pay the response data is commonly under paidData.data
+  const rawResponsePayload: unknown = payCompleted
+    ? (paidData.data ?? paidData?.serviceResult?.raw ?? {})
+    : (paidData?.serviceResult?.raw ?? paidData?.data ?? {})
+  const parsedStringPayload =
+    typeof rawResponsePayload === "string" ? tryParseJsonString(rawResponsePayload) : null
+  const providerResponse: AnyObj =
+    (parsedStringPayload && typeof parsedStringPayload === "object")
+      ? parsedStringPayload
+      : (typeof rawResponsePayload === "object" && rawResponsePayload !== null ? rawResponsePayload as AnyObj : {})
+  const rawResponseText = typeof rawResponsePayload === "string" ? rawResponsePayload : ""
 
-  const processedContent =
-    providerResponse?.result?.data?.processed_content ||
-    providerResponse?.data?.processed_content ||
-    (typeof providerResponse === "string" ? providerResponse : "") ||
-    paidData?.serviceResult?.raw?.result?.data?.processed_content ||
-    paidData?.serviceResult?.content ||
-    ""
+  const processedContent = deriveBestContent([
+    providerResponse,
+    paidData?.serviceResult,
+    paidData?.serviceResult?.raw,
+    paidData?.data,
+    rawResponsePayload,
+  ])
   const cleanedContent = cleanResponseText(processedContent)
   const summaryBullets = toSummaryBullets(cleanedContent)
-  const hasProviderResponse = Boolean(
-    providerResponse &&
-    typeof providerResponse === "object" &&
-    Object.keys(providerResponse).length > 0,
-  )
+  const hasProviderResponse = (providerResponse && Object.keys(providerResponse).length > 0) || Boolean(rawResponseText)
   const fallbackSummaryBullets = hasProviderResponse
     ? Object.entries(providerResponse)
       .slice(0, 6)
       .map(([k, v]) => `${k}: ${typeof v === "object" ? "[object]" : String(v).slice(0, 140)}`)
     : []
+  const structuredHighlights = providerResponse && Object.keys(providerResponse).length > 0
+    ? collectLeafHighlights(providerResponse)
+    : (rawResponseText ? [rawResponseText.slice(0, 220)] : [])
   const displaySummaryBullets = summaryBullets.length > 0 ? summaryBullets : fallbackSummaryBullets
-  const displayContent = cleanedContent || (hasProviderResponse ? JSON.stringify(providerResponse, null, 2) : "")
+  const displayContent = cleanedContent || rawResponseText || (hasProviderResponse ? JSON.stringify(providerResponse, null, 2) : "")
   const sourceUrl =
     providerResponse?.result?.data?.url ||
     paidData?.data?.result?.data?.url ||
@@ -1128,7 +1326,7 @@ export function X402BuyerHubView() {
                           className="h-7 text-xs"
                           onClick={() => void removeAssignedAgentPolicy(String(p.id))}
                         >
-                          Disable
+                          Delete
                         </Button>
                       </div>
                     ))}
@@ -1192,6 +1390,17 @@ export function X402BuyerHubView() {
             />
             <Button type="button" size="sm" className="h-9 shrink-0 px-4" onClick={() => void browseMarketplace()}>
               Search
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-9 shrink-0 px-4"
+              onClick={() => void validateOrthogonalResults()}
+              disabled={validatingOrthogonal || marketRows.length === 0}
+              title="Probe Orthogonal rows for real x402 compatibility"
+            >
+              {validatingOrthogonal ? "Validating..." : "Validate Orthogonal"}
             </Button>
           </div>
 
@@ -1286,6 +1495,7 @@ export function X402BuyerHubView() {
                   const listedPriceLabel = formatMarketplacePrice(svc)
                   const registerTarget = String(svc.registerUrl || svc.url || "").trim().toLowerCase()
                   const alreadyRegistered = registerTarget ? registeredProviderEndpoints.has(registerTarget) : false
+                  const probeMeta = probeByUrl[registerTarget]
                   return (
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{svc.name}</p>
@@ -1300,6 +1510,15 @@ export function X402BuyerHubView() {
                     {svc.network ? <span>{svc.network}</span> : null}
                     {listedPriceLabel ? <span className="text-foreground/80">{listedPriceLabel}</span> : null}
                     {alreadyRegistered ? <span className="rounded-sm border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-400">registered</span> : null}
+                    {probeMeta?.compatible ? (
+                      <span className="rounded-sm border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-400">
+                        x402-ready{probeMeta?.priceUsdc != null ? ` $${Number(probeMeta.priceUsdc).toFixed(3)}` : ""}
+                      </span>
+                    ) : probeMeta ? (
+                      <span className="rounded-sm border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
+                        not-compatible ({String(probeMeta.status)})
+                      </span>
+                    ) : null}
                     {svc.trustScore != null ? <span>trust {Number(svc.trustScore).toFixed(1)}</span> : null}
                     {Array.isArray(svc.requiredInputs) && svc.requiredInputs.length > 0 ? <span>req: {svc.requiredInputs.slice(0, 3).join(", ")}</span> : null}
                   </div>
@@ -1312,7 +1531,16 @@ export function X402BuyerHubView() {
                   variant="outline"
                   className="h-8 shrink-0"
                   disabled={registeredProviderEndpoints.has(String(svc.registerUrl || svc.url || "").trim().toLowerCase())}
-                  onClick={() => registerService(svc.registerUrl || svc.url, svc.name, svc.category, svc.source, svc.description, svc.trustScore)}
+                  onClick={() => registerService(
+                    svc.registerUrl || svc.url,
+                    svc.name,
+                    svc.category,
+                    svc.source,
+                    svc.description,
+                    svc.trustScore,
+                    svc.method,
+                    buildMarketplaceProbeSampleBody(svc),
+                  )}
                 >
                   {registeredProviderEndpoints.has(String(svc.registerUrl || svc.url || "").trim().toLowerCase()) ? "Registered" : "Register"}
                 </Button>
@@ -1455,7 +1683,7 @@ export function X402BuyerHubView() {
                     </div>
                   </div>
                   <div className="flex gap-1.5">
-                    {(["summary", "content", "raw"] as const).map((tab) => (
+                    {(["summary", "structured", "content", "raw"] as const).map((tab) => (
                       <Button key={tab} type="button" variant={responseTab === tab ? "default" : "outline"} size="sm" className="h-7 text-xs capitalize" onClick={() => setResponseTab(tab)}>
                         {tab}
                       </Button>
@@ -1472,10 +1700,20 @@ export function X402BuyerHubView() {
                       )}
                       {sourceUrl ? <p className="mt-3 text-muted-foreground">Source: <a className="underline underline-offset-2" href={sourceUrl} target="_blank" rel="noreferrer">{sourceUrl}</a></p> : null}
                     </div>
+                  ) : responseTab === "structured" ? (
+                    <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80">
+                      {structuredHighlights.length > 0 ? (
+                        <ul className="list-disc pl-4 space-y-1">
+                          {structuredHighlights.map((line, i) => <li key={i} className="break-all">{line}</li>)}
+                        </ul>
+                      ) : (
+                        <p className="text-muted-foreground">No structured fields detected for this response.</p>
+                      )}
+                    </div>
                   ) : responseTab === "content" ? (
                     <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80 whitespace-pre-wrap">{displayContent}</div>
                   ) : (
-                    <pre className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80">{JSON.stringify(providerResponse || paidData?.serviceResult?.raw || paidData?.data || {}, null, 2)}</pre>
+                    <pre className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80">{JSON.stringify(providerResponse || rawResponsePayload || {}, null, 2)}</pre>
                   )}
                 </div>
               ) : null}
