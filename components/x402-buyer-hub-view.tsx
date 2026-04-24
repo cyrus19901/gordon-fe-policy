@@ -1,11 +1,12 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import {
   Dialog,
@@ -226,7 +227,19 @@ function deriveServiceInputGuide(provider?: AnyObj): {
 
   const req = [...required]
   const opt = [...optional].filter((k) => !required.has(k))
-  const exampleInput = req.includes("url") ? "https://en.wikipedia.org/wiki/Gordon" : "gordon"
+  const firstReq = req[0] || ""
+  const exampleInput =
+    req.includes("url") || firstReq === "url"
+      ? "https://en.wikipedia.org/wiki/Gordon"
+      : firstReq === "domain"
+        ? "example.com"
+        : ["query", "q", "search", "keyword", "keywords"].some((k) => req.includes(k))
+          ? "gordon research"
+          : ["prompt", "text", "input"].some((k) => req.includes(k))
+            ? "Summarize agentic commerce in two bullets."
+            : firstReq
+              ? `demo value for ${firstReq}`
+              : "https://example.com"
   const inputMode = method === "POST" ? "POST JSON body" : method === "GET" ? "GET query params" : "request"
 
   return {
@@ -239,6 +252,76 @@ function deriveServiceInputGuide(provider?: AnyObj): {
     optional: opt,
     outputSummary: outputLines,
     exampleInput,
+  }
+}
+
+/** Demo defaults aligned with `buildMarketplaceProbeSampleBody` for known Orthogonal shapes. */
+function defaultStringForExecField(key: string): string {
+  const k = String(key || "").trim()
+  const lower = k.toLowerCase()
+  if (lower === "url") return "https://en.wikipedia.org/wiki/Gordon"
+  if (lower === "domain") return "example.com"
+  if (["query", "q", "search", "keyword", "keywords"].includes(lower)) return "gordon research"
+  if (["text", "input"].includes(lower)) return "Summarize agentic commerce in two bullets."
+  if (lower === "prompt") return "Hello from Buyer Hub demo"
+  if (lower === "platform") return "instagram"
+  if (lower === "handle" || lower === "username") return "nike"
+  if (lower === "filter_key") return "username"
+  if (lower === "filter_value") return "nike"
+  if (lower === "email") return "demo@example.com"
+  if (lower === "paging") return JSON.stringify({ skip: 0, limit: 1, page: 1 })
+  if (lower === "creators") return JSON.stringify(["nike", "adidas"])
+  return ""
+}
+
+function coerceParamValue(raw: string): string | number | boolean | AnyObj | unknown[] {
+  const t = raw.trim()
+  if (t === "true") return true
+  if (t === "false") return false
+  if (t !== "" && /^-?\d+(\.\d+)?$/.test(t)) return Number(t)
+  if ((t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))) {
+    try {
+      return JSON.parse(t) as AnyObj | unknown[]
+    } catch {
+      return raw
+    }
+  }
+  return raw
+}
+
+function isLikelyJsonExecField(key: string, value: string): boolean {
+  if (/^(paging|creators|body|payload|filters|metadata|context)$/i.test(String(key || "").trim())) return true
+  const t = String(value || "").trim()
+  if (t.length > 72 && ((t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]")))) return true
+  return false
+}
+
+function formatCompactNumber(n: unknown): string {
+  const num = Number(n)
+  if (!Number.isFinite(num)) return String(n ?? "—")
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(num)
+}
+
+function getShowcaseProfilePayload(payload: AnyObj): {
+  success: boolean
+  creditsRemaining: number | null
+  user: AnyObj
+  stats: AnyObj
+  statsV2: AnyObj
+} | null {
+  if (!payload || typeof payload !== "object") return null
+  const root = payload?.data && typeof payload.data === "object" ? payload.data : payload
+  const user = root?.user
+  const stats = root?.stats
+  const statsV2 = root?.statsV2
+  if (!user || typeof user !== "object") return null
+  if (!stats || typeof stats !== "object") return null
+  return {
+    success: Boolean(root?.success),
+    creditsRemaining: Number.isFinite(Number(root?.credits_remaining)) ? Number(root.credits_remaining) : null,
+    user,
+    stats,
+    statsV2: statsV2 && typeof statsV2 === "object" ? statsV2 : {},
   }
 }
 
@@ -382,13 +465,16 @@ export function X402BuyerHubView() {
   const [selectedAction, setSelectedAction] = useState("request")
   const [preferredNetwork, setPreferredNetwork] = useState("")
   const [requestInput, setRequestInput] = useState("https://example.com")
+  /** When the catalog exposes body/query fields, we collect one string per field (JSON in string for objects). */
+  const [execParamValues, setExecParamValues] = useState<Record<string, string>>({})
+  const lastExecProviderIdRef = useRef("")
   const [execResult, setExecResult] = useState<AnyObj | null>(null)
   const [execTrace, setExecTrace] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [currentUser, setCurrentUser] = useState<AnyObj | null>(null)
   const [checkingUser, setCheckingUser] = useState(true)
   const [showRawOutput, setShowRawOutput] = useState(false)
-  const [responseTab, setResponseTab] = useState<"summary" | "structured" | "content" | "raw">("summary")
+  const [responseTab, setResponseTab] = useState<"summary" | "showcase" | "structured" | "content" | "raw">("summary")
   const [policyModalOpen, setPolicyModalOpen] = useState(false)
   const [policyMode, setPolicyMode] = useState<"agent" | "user">("agent")
   const [policyProviderId, setPolicyProviderId] = useState("")
@@ -412,6 +498,10 @@ export function X402BuyerHubView() {
     )
   }, [providers])
   const inputGuide = useMemo(() => deriveServiceInputGuide(selectedProviderObj), [selectedProviderObj])
+  const execSchemaKeys = useMemo(() => {
+    const keys = [...inputGuide.required, ...inputGuide.optional]
+    return [...new Set(keys)]
+  }, [inputGuide.required, inputGuide.optional])
 
   const chainShowcase = useMemo(() => {
     let raw: AnyObj[] = []
@@ -767,10 +857,30 @@ export function X402BuyerHubView() {
       trace(`POST /v1/payments/pay  provider=${selectedProvider} action=${selectedAction}${preferredNetwork ? ` preferred_network=${preferredNetwork}` : ""}`)
       trace(`Accepted networks: ${acceptedNetworks.join(", ") || "none stored"}`)
 
+      const schemaKeys = execSchemaKeys
+      let params: Record<string, any>
+      if (schemaKeys.length === 0) {
+        params = { url: requestInput, query: requestInput, domain: requestInput, input: requestInput }
+      } else {
+        for (const k of inputGuide.required) {
+          if (!String(execParamValues[k] ?? "").trim()) {
+            toast.error(`Fill required field: ${k}`)
+            return
+          }
+        }
+        params = {}
+        for (const k of schemaKeys) {
+          const raw = String(execParamValues[k] ?? "").trim()
+          if (!raw) continue
+          params[k] = coerceParamValue(raw)
+        }
+      }
+      trace(`params keys: ${Object.keys(params).join(", ") || "(none)"}`)
+
       const body: AnyObj = {
         provider_id: selectedProvider,
         action: selectedAction,
-        params: { url: requestInput, query: requestInput, domain: requestInput, input: requestInput },
+        params,
         user_email: currentUser.email,
         ...(preferredNetwork ? { preferred_network: preferredNetwork } : {}),
       }
@@ -911,12 +1021,50 @@ export function X402BuyerHubView() {
 
   useEffect(() => {
     if (!selectedProviderObj) return
+    if (execSchemaKeys.length > 0) return
     const nextInput = inputGuide.exampleInput
     if (nextInput && (!requestInput || requestInput === "https://example.com")) {
       setRequestInput(nextInput)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedProvider])
+  }, [selectedProvider, execSchemaKeys.length])
+
+  useEffect(() => {
+    const pid = String(selectedProviderObj?.id || "")
+    const keys = execSchemaKeys
+    const defaults = Object.fromEntries(keys.map((k) => [k, defaultStringForExecField(k)]))
+    if (!pid) {
+      lastExecProviderIdRef.current = ""
+      if (keys.length) setExecParamValues({})
+      return
+    }
+    if (keys.length === 0) {
+      setExecParamValues({})
+      return
+    }
+    if (pid !== lastExecProviderIdRef.current) {
+      lastExecProviderIdRef.current = pid
+      setExecParamValues(defaults)
+      return
+    }
+    setExecParamValues((prev) => {
+      const next: Record<string, string> = { ...prev }
+      let changed = false
+      for (const k of keys) {
+        if (next[k] === undefined) {
+          next[k] = defaults[k] ?? ""
+          changed = true
+        }
+      }
+      for (const k of Object.keys(next)) {
+        if (!keys.includes(k)) {
+          delete next[k]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [selectedProviderObj?.id, execSchemaKeys.join("\0")])
 
   const walletReady = Boolean(walletInfo?.address)
   const onboardingReady = Boolean(currentUser?.email) && Boolean(apiKey) && walletReady
@@ -971,6 +1119,10 @@ export function X402BuyerHubView() {
   const txUrl =
     payResult?.settlement?.explorerUrl ||
     (txHash ? `${getExplorerBaseUrl(payResult?.settlement?.network || settlement?.network || payResult?.network || execResult?.sign?.chainName)}${txHash}` : "")
+  const showcaseProfile = getShowcaseProfilePayload(providerResponse)
+  const responseTabs = showcaseProfile
+    ? (["summary", "showcase", "structured", "content", "raw"] as const)
+    : (["summary", "structured", "content", "raw"] as const)
 
   // Accepted networks for the selected provider (shown in network selector)
   const selectedProviderAccepts: string[] = useMemo(() => {
@@ -981,6 +1133,12 @@ export function X402BuyerHubView() {
   }, [providers, selectedProvider])
 
   const signerAddress = String(walletInfo?.address || settlementWallet?.address || "")
+
+  useEffect(() => {
+    if (responseTab === "showcase" && !showcaseProfile) {
+      setResponseTab("summary")
+    }
+  }, [responseTab, showcaseProfile])
 
   return (
     <div className="space-y-4">
@@ -1608,12 +1766,82 @@ export function X402BuyerHubView() {
                   )}
               </select>
             </div>
-            <Input
-              className="h-9 text-sm"
-              value={requestInput}
-              onChange={(e) => setRequestInput(e.target.value)}
-              placeholder={inputGuide.exampleInput}
-            />
+            {execSchemaKeys.length === 0 ? (
+              <Input
+                className="h-9 text-sm"
+                value={requestInput}
+                onChange={(e) => setRequestInput(e.target.value)}
+                placeholder={inputGuide.exampleInput}
+              />
+            ) : (
+              <div className="space-y-3">
+                {inputGuide.required.length ? (
+                  <div className="space-y-2">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Required</p>
+                    {inputGuide.required.map((k) => {
+                      const v = execParamValues[k] ?? ""
+                      const multiline = isLikelyJsonExecField(k, v) || v.includes("\n")
+                      return (
+                        <div key={k} className="space-y-1">
+                          <Label className="text-xs">{k}</Label>
+                          {multiline ? (
+                            <Textarea
+                              className="min-h-[72px] font-mono text-xs"
+                              value={v}
+                              onChange={(e) => setExecParamValues((p) => ({ ...p, [k]: e.target.value }))}
+                              placeholder={defaultStringForExecField(k)}
+                            />
+                          ) : (
+                            <Input
+                              className="h-9 text-sm"
+                              value={v}
+                              onChange={(e) => setExecParamValues((p) => ({ ...p, [k]: e.target.value }))}
+                              placeholder={defaultStringForExecField(k)}
+                            />
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : null}
+                {inputGuide.optional.length ? (
+                  <details
+                    className="rounded-md border border-border/60 bg-muted/10 px-3 py-2"
+                    open={inputGuide.required.length === 0}
+                  >
+                    <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                      Optional fields ({inputGuide.optional.length})
+                    </summary>
+                    <div className="mt-3 space-y-2">
+                      {inputGuide.optional.map((k) => {
+                        const v = execParamValues[k] ?? ""
+                        const multiline = isLikelyJsonExecField(k, v) || v.includes("\n")
+                        return (
+                          <div key={k} className="space-y-1">
+                            <Label className="text-xs">{k}</Label>
+                            {multiline ? (
+                              <Textarea
+                                className="min-h-[64px] font-mono text-xs"
+                                value={v}
+                                onChange={(e) => setExecParamValues((p) => ({ ...p, [k]: e.target.value }))}
+                                placeholder={defaultStringForExecField(k)}
+                              />
+                            ) : (
+                              <Input
+                                className="h-9 text-sm"
+                                value={v}
+                                onChange={(e) => setExecParamValues((p) => ({ ...p, [k]: e.target.value }))}
+                                placeholder={defaultStringForExecField(k)}
+                              />
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </details>
+                ) : null}
+              </div>
+            )}
             <div className="rounded-md border border-border/50 bg-muted/20 px-4 py-3 text-xs space-y-2 text-muted-foreground">
               <p className="font-medium text-foreground/90">{inputGuide.title}</p>
               <p>{inputGuide.serviceSummary}</p>
@@ -1683,7 +1911,7 @@ export function X402BuyerHubView() {
                     </div>
                   </div>
                   <div className="flex gap-1.5">
-                    {(["summary", "structured", "content", "raw"] as const).map((tab) => (
+                    {responseTabs.map((tab) => (
                       <Button key={tab} type="button" variant={responseTab === tab ? "default" : "outline"} size="sm" className="h-7 text-xs capitalize" onClick={() => setResponseTab(tab)}>
                         {tab}
                       </Button>
@@ -1699,6 +1927,67 @@ export function X402BuyerHubView() {
                         <p className="text-muted-foreground">No summary extracted. Check the Content or Raw tab.</p>
                       )}
                       {sourceUrl ? <p className="mt-3 text-muted-foreground">Source: <a className="underline underline-offset-2" href={sourceUrl} target="_blank" rel="noreferrer">{sourceUrl}</a></p> : null}
+                    </div>
+                  ) : responseTab === "showcase" && showcaseProfile ? (
+                    <div className="rounded-md border border-border/60 bg-muted/20 p-4 text-xs space-y-4">
+                      <div className="flex items-start gap-3">
+                        {showcaseProfile.user?.avatarLarger ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={showcaseProfile.user.avatarLarger}
+                            alt={String(showcaseProfile.user?.nickname || showcaseProfile.user?.uniqueId || "profile")}
+                            className="h-16 w-16 rounded-full border border-border/60 object-cover"
+                          />
+                        ) : (
+                          <div className="h-16 w-16 rounded-full border border-border/60 bg-muted/50" />
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold truncate">{showcaseProfile.user?.nickname || "Unknown"}</p>
+                          <p className="text-muted-foreground truncate">@{showcaseProfile.user?.uniqueId || "unknown"}</p>
+                          {showcaseProfile.user?.signature ? (
+                            <p className="mt-1 text-muted-foreground line-clamp-2">{String(showcaseProfile.user.signature)}</p>
+                          ) : null}
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {showcaseProfile.user?.verified ? <Badge variant="outline" className="text-[10px]">Verified</Badge> : null}
+                            {showcaseProfile.user?.isOrganization ? <Badge variant="outline" className="text-[10px]">Organization</Badge> : null}
+                            {showcaseProfile.success ? <Badge variant="outline" className="text-[10px]">Response OK</Badge> : null}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {[
+                          ["Followers", showcaseProfile.stats?.followerCount ?? showcaseProfile.statsV2?.followerCount],
+                          ["Following", showcaseProfile.stats?.followingCount ?? showcaseProfile.statsV2?.followingCount],
+                          ["Likes", showcaseProfile.stats?.heartCount ?? showcaseProfile.statsV2?.heartCount],
+                          ["Videos", showcaseProfile.stats?.videoCount ?? showcaseProfile.statsV2?.videoCount],
+                        ].map(([label, value]) => (
+                          <div key={String(label)} className="rounded-md border border-border/60 bg-background px-3 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+                            <p className="mt-0.5 text-sm font-semibold">{formatCompactNumber(value)}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <div className="rounded-md border border-border/60 bg-background px-3 py-2">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Category</p>
+                          <p className="mt-1">{showcaseProfile.user?.commerceUserInfo?.category || "—"}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background px-3 py-2">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Language / Credits</p>
+                          <p className="mt-1">
+                            {String(showcaseProfile.user?.language || "—")}
+                            {showcaseProfile.creditsRemaining != null ? ` · ${showcaseProfile.creditsRemaining} credits` : ""}
+                          </p>
+                        </div>
+                      </div>
+
+                      {showcaseProfile.user?.bioLink?.link ? (
+                        <p className="text-muted-foreground">
+                          Bio link: <a href={String(showcaseProfile.user.bioLink.link)} target="_blank" rel="noreferrer" className="underline underline-offset-2">{String(showcaseProfile.user.bioLink.link)}</a>
+                        </p>
+                      ) : null}
                     </div>
                   ) : responseTab === "structured" ? (
                     <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80">
