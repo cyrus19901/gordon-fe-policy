@@ -1115,10 +1115,33 @@ export function X402BuyerHubView() {
     providerResponse?.result?.data?.url ||
     paidData?.data?.result?.data?.url ||
     paidData?.serviceResult?.raw?.result?.data?.url || ""
-  const txHash = payResult?.settlement?.txHash || settlement?.txHash
+  // Extract tx hash — prefer direct field, fall back to decoding the
+  // base64 payment-response header (as stored by Gordon after /complete).
+  function extractTxHashFromResponseHeader(hdr: AnyObj | undefined): string | null {
+    if (!hdr) return null
+    const b64 =
+      hdr["X-Payment-Response"] ??
+      hdr["payment-response"] ??
+      hdr["PAYMENT-RESPONSE"]
+    if (typeof b64 !== "string" || !b64) return null
+    try {
+      const decoded = JSON.parse(atob(b64)) as AnyObj
+      return typeof decoded.transaction === "string" ? decoded.transaction : null
+    } catch { return null }
+  }
+  const txHash =
+    payResult?.settlement?.txHash ||
+    settlement?.tx_hash ||
+    settlement?.txHash ||
+    extractTxHashFromResponseHeader(settlement?.payment_response_header)
+  const txNetwork =
+    payResult?.settlement?.network ||
+    settlement?.network ||
+    payResult?.network ||
+    execResult?.sign?.chainName
   const txUrl =
     payResult?.settlement?.explorerUrl ||
-    (txHash ? `${getExplorerBaseUrl(payResult?.settlement?.network || settlement?.network || payResult?.network || execResult?.sign?.chainName)}${txHash}` : "")
+    (txHash ? `${getExplorerBaseUrl(txNetwork)}${txHash}` : "")
   const showcaseProfile = getShowcaseProfilePayload(providerResponse)
   const responseTabs = showcaseProfile
     ? (["summary", "showcase", "structured", "content", "raw"] as const)
@@ -1876,10 +1899,18 @@ export function X402BuyerHubView() {
                 {[
                   ["Outcome", payResult.status || paidData?.status || execResult?.phase || "—"],
                   ["Provider", payResult.provider || paidData?.provider || selectedProvider || "—"],
-                  ["Chain", payResult.chainName || settlement?.network || execResult?.sign?.chainName || "—"],
-                  ["Price", payResult.priceUsdc != null ? `$${Number(payResult.priceUsdc).toFixed(6)} USDC` : price?.total != null ? `$${Number(price.total).toFixed(4)} USDC` : "—"],
-                  ["Pay-to", payResult.payTo ? `${String(payResult.payTo).slice(0, 8)}…${String(payResult.payTo).slice(-6)}` : "—"],
-                  ["Payment ID", payResult.paymentId || paidData?.paymentId || "—"],
+                  // Humanise CAIP-2 network strings (e.g. "eip155:8453" → "Base")
+                  ["Chain", (() => {
+                    const raw = payResult.chainName || txNetwork || "—"
+                    if (raw === "eip155:8453") return "Base"
+                    if (raw === "eip155:84532") return "Base Sepolia"
+                    if (raw === "eip155:137") return "Polygon"
+                    if (raw === "eip155:42161") return "Arbitrum"
+                    return raw
+                  })()],
+                  ["Price", payResult.priceUsdc != null ? `$${Number(payResult.priceUsdc).toFixed(6)} USDC` : price?.total != null ? `$${Number(price.total).toFixed(4)} USDC` : settlement?.amount_units ? `$${(Number(settlement.amount_units) / 1_000_000).toFixed(6)} USDC` : "—"],
+                  ["Pay-to", payResult.payTo ? shortAddr(String(payResult.payTo)) : settlement?.pay_to ? shortAddr(String(settlement.pay_to)) : "—"],
+                  ["Settlement", settlement?.receipt_status || payResult.paymentId || paidData?.paymentId || "—"],
                 ].map(([k, v]) => (
                   <div key={k} className="bg-card px-4 py-3">
                     <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{k}</p>
@@ -1889,11 +1920,12 @@ export function X402BuyerHubView() {
               </div>
 
               {txHash ? (
-                <div className="border-t border-border/40 px-5 py-3 text-xs">
-                  <span className="text-muted-foreground">Settlement TX: </span>
+                <div className="border-t border-border/40 px-5 py-3 flex items-center gap-2 text-xs">
+                  <span className="text-muted-foreground shrink-0">On-chain TX:</span>
                   {txUrl
-                    ? <a href={txUrl} target="_blank" rel="noreferrer" className="font-mono underline underline-offset-2">{txHash}</a>
-                    : <span className="font-mono">{txHash}</span>}
+                    ? <a href={txUrl} target="_blank" rel="noreferrer" className="font-mono underline underline-offset-2 truncate text-emerald-600 dark:text-emerald-400">{txHash}</a>
+                    : <span className="font-mono truncate">{txHash}</span>}
+                  {txUrl && <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />}
                 </div>
               ) : null}
 
