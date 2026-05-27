@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -326,15 +328,44 @@ function getShowcaseProfilePayload(payload: AnyObj): {
 }
 
 function toSummaryBullets(text: string): string[] {
-  const lines = String(text || "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)
+  const raw = String(text || "")
+  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean)
+
+  // For markdown scrape content: collect one leading sentence per section
+  // (heading + its first non-empty paragraph) — up to 6 entries.
+  const sections: string[] = []
+  let currentHeading = ""
+  let pendingPara = ""
+
+  const flush = () => {
+    if (sections.length >= 6) return
+    const entry = [currentHeading, pendingPara].filter(Boolean).join(" — ")
+    if (entry) sections.push(entry)
+    currentHeading = ""
+    pendingPara = ""
+  }
+
+  for (const line of lines) {
+    if (/^#{1,3}\s/.test(line)) {
+      flush()
+      currentHeading = line.replace(/^#+\s*/, "")
+    } else if (!pendingPara && !/^[-*>|`]/.test(line) && line.length > 20) {
+      // First substantial prose line under this heading
+      pendingPara = line.replace(/\*\*|__|\[([^\]]+)\]\([^)]+\)/g, "$1").slice(0, 160)
+    }
+  }
+  flush()
+
+  if (sections.length >= 3) return sections.slice(0, 6)
+
+  // Fallback: explicit bullet/list items
   const bulletLines = lines
     .filter((l) => l.startsWith("- ") || l.startsWith("* "))
-    .map((l) => l.replace(/^[-*]\s+/, ""))
-  if (bulletLines.length) return bulletLines.slice(0, 6)
-  return lines.slice(0, 6)
+    .map((l) => l.replace(/^[-*]\s+/, "").slice(0, 160))
+  if (bulletLines.length >= 2) return bulletLines.slice(0, 6)
+
+  // Last resort: first 6 non-trivial lines
+  return lines.filter((l) => l.length > 10 && !/^#{1,6}\s/.test(l)).slice(0, 6)
 }
 
 function cleanResponseText(text: string): string {
@@ -1950,15 +1981,15 @@ export function X402BuyerHubView() {
                     ))}
                   </div>
                   {responseTab === "summary" ? (
-                    <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80">
+                    <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-96">
                       {displaySummaryBullets.length > 0 ? (
-                        <ul className="list-disc pl-4 space-y-1">
-                          {displaySummaryBullets.map((b, i) => <li key={i}>{b}</li>)}
+                        <ul className="list-disc pl-4 space-y-1.5">
+                          {displaySummaryBullets.map((b, i) => <li key={i} className="leading-relaxed">{b}</li>)}
                         </ul>
                       ) : (
-                        <p className="text-muted-foreground">No summary extracted. Check the Content or Raw tab.</p>
+                        <p className="text-muted-foreground">No summary extracted. Switch to the Content tab to see the full response.</p>
                       )}
-                      {sourceUrl ? <p className="mt-3 text-muted-foreground">Source: <a className="underline underline-offset-2" href={sourceUrl} target="_blank" rel="noreferrer">{sourceUrl}</a></p> : null}
+                      {sourceUrl ? <p className="mt-3 text-muted-foreground border-t border-border/40 pt-2">Source: <a className="underline underline-offset-2 text-foreground" href={sourceUrl} target="_blank" rel="noreferrer">{sourceUrl}</a></p> : null}
                     </div>
                   ) : responseTab === "showcase" && showcaseProfile ? (
                     <div className="rounded-md border border-border/60 bg-muted/20 p-4 text-xs space-y-4">
@@ -2032,7 +2063,31 @@ export function X402BuyerHubView() {
                       )}
                     </div>
                   ) : responseTab === "content" ? (
-                    <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80 whitespace-pre-wrap">{displayContent}</div>
+                    <div className="rounded-md border border-border/60 bg-muted/20 p-4 text-sm overflow-auto max-h-[520px]">
+                      {displayContent ? (
+                        <div className="prose prose-sm dark:prose-invert max-w-none
+                            prose-headings:font-semibold prose-headings:mt-4 prose-headings:mb-1
+                            prose-p:my-1.5 prose-li:my-0.5
+                            prose-a:text-blue-600 dark:prose-a:text-blue-400 prose-a:underline
+                            prose-code:bg-muted prose-code:px-1 prose-code:rounded prose-code:text-xs
+                            prose-pre:bg-muted prose-pre:rounded-md prose-pre:overflow-x-auto
+                            prose-blockquote:border-l-2 prose-blockquote:border-border prose-blockquote:pl-3 prose-blockquote:italic
+                            prose-table:text-xs prose-th:font-medium">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              a: ({ href, children }) => (
+                                <a href={href} target="_blank" rel="noreferrer">{children}</a>
+                              ),
+                            }}
+                          >
+                            {displayContent}
+                          </ReactMarkdown>
+                        </div>
+                      ) : (
+                        <p className="text-muted-foreground text-xs">No content extracted.</p>
+                      )}
+                    </div>
                   ) : (
                     <pre className="rounded-md border border-border/60 bg-muted/20 p-3 text-xs overflow-auto max-h-80">{JSON.stringify(providerResponse || rawResponsePayload || {}, null, 2)}</pre>
                   )}
